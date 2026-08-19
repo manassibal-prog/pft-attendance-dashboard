@@ -215,8 +215,14 @@ function formatDdMmmYyyy_(date) {
   return dd + '/' + months[date.getMonth()] + '/' + date.getFullYear();
 }
 
+// Unlike the Sheets REST API's default FORMATTED_VALUE mode (always
+// strings), Apps Script's SpreadsheetApp.getValues() returns real Date
+// objects for date-typed cells — and Roster's header dates are genuinely
+// typed as dates, not text. Both branches are load-bearing here.
 function cellToDateString_(cell) {
-  return typeof cell === 'string' ? cell.trim() : '';
+  if (cell instanceof Date) return formatDdMmmYyyy_(cell);
+  if (typeof cell === 'string') return cell.trim();
+  return '';
 }
 
 function findTodayColumn_(grid, todayStr) {

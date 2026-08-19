@@ -93,6 +93,32 @@ t('roster: blank cell falls back to weekly-off-day match', () => {
   assertEq(sandbox.rosterCodeFromGrid_(grid, 'Dhananjay', new Date(2026, 7, 19), 'Sunday'), '');
 });
 
+// Regression test: SpreadsheetApp.getValues() (what Code.gs actually calls)
+// returns real Date objects for date-typed cells, unlike the Sheets REST
+// API's FORMATTED_VALUE mode (always strings) that the parked Node backend
+// used. A header row built from Date objects, matching the real Roster
+// sheet, must still resolve — this is exactly the bug that shipped once
+// (cellToDateString_ only handled strings, so nothing ever matched and the
+// whole grid rendered blank for every employee).
+//
+// Built with the sandbox's own Date constructor, not this file's — vm
+// contexts have their own separate globals, so a Date built out here would
+// fail `instanceof Date` inside the sandbox regardless of the fix (a Node
+// cross-realm quirk with no equivalent in the real single-realm Apps Script
+// runtime, but one that would still make this specific test meaningless).
+vm.runInContext(`
+  var dateObjectGrid = [
+    ['Aug', 'Name', 'P', '', '', '', '', '', '', '', new Date(2026, 7, 17), new Date(2026, 7, 18), new Date(2026, 7, 19)],
+    ['Aug', 'Dhananjay', 12, '', '', '', '', '', '', '', 'P', 'WO', 'WFH'],
+  ];
+  var dateFor17 = new Date(2026, 7, 17);
+  var dateFor19 = new Date(2026, 7, 19);
+`, sandbox);
+t('roster: header dates as real Date objects (Apps Script getValues() behavior) still resolve', () => {
+  assertEq(sandbox.rosterCodeFromGrid_(sandbox.dateObjectGrid, 'Dhananjay', sandbox.dateFor19, null), 'WFH');
+  assertEq(sandbox.rosterCodeFromGrid_(sandbox.dateObjectGrid, 'Dhananjay', sandbox.dateFor17, null), 'P');
+});
+
 // ---- weekly/monthly range helpers (Team Status roster grid, My Attendance month strip) ----
 t('dateRangeInfo_ generates the right number of consecutive days with correct weekday labels', () => {
   const days = sandbox.dateRangeInfo_(new Date(2026, 7, 31), 3); // Aug 31 (Mon) -> Sep 2
