@@ -33,8 +33,8 @@ function initializeSheets() {
   if (!ss.getSheetByName(SHEET_EMPLOYEE)) {
     const sh = ss.insertSheet(SHEET_EMPLOYEE);
     sh.appendRow(['Emp ID', 'Employee Name', 'Official Email', 'Department', 'Designation',
-                  'Shift Start', 'Shift End', 'Weekly Off Day', 'Status', 'Role']);
-    sh.getRange(1, 1, 1, 10).setFontWeight('bold');
+                  'Shift Start', 'Shift End', 'Weekly Off Day', 'Status']);
+    sh.getRange(1, 1, 1, 9).setFontWeight('bold');
     sh.setFrozenRows(1);
   }
 
@@ -117,25 +117,28 @@ function findEmployeeByEmail_(email) {
   const idCol = headers.indexOf('Emp ID');
   const nameCol = headers.indexOf('Employee Name');
   const deptCol = headers.indexOf('Department');
+  const designationCol = headers.indexOf('Designation');
   const shiftCol = headers.indexOf('Shift Start');
   const weeklyOffCol = headers.indexOf('Weekly Off Day');
   const statusCol = headers.indexOf('Status');
-  const roleCol = headers.indexOf('Role'); // -1 if the column doesn't exist yet — treated as Advisor
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][emailCol]).trim().toLowerCase() === String(email).trim().toLowerCase()) {
       return {
         empId: data[i][idCol], name: data[i][nameCol], email: data[i][emailCol],
-        department: data[i][deptCol], shiftStart: timeCellToString_(data[i][shiftCol]),
-        weeklyOff: data[i][weeklyOffCol], status: data[i][statusCol],
-        role: roleCol > -1 ? String(data[i][roleCol] || 'Advisor').trim() : 'Advisor'
+        department: data[i][deptCol], designation: data[i][designationCol],
+        shiftStart: timeCellToString_(data[i][shiftCol]),
+        weeklyOff: data[i][weeklyOffCol], status: data[i][statusCol]
       };
     }
   }
   return null;
 }
 
+// Manager status comes from the existing Designation column (e.g. "Team
+// Leader") rather than a separate Role column — one less thing to keep in
+// sync in Employee Master.
 function isManager_(emp) {
-  return String(emp.role || '').trim().toLowerCase() === 'manager';
+  return /team\s*lead|manager/i.test(String(emp.designation || ''));
 }
 
 function requireManager_() {
