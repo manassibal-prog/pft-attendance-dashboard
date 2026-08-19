@@ -49,11 +49,28 @@ parked for now after hitting deployment friction unrelated to the app code.
 
 ## Updating later
 
-Edit `Code.gs` / `Index.html` here, push to GitHub, then paste the updated
-content into the Apps Script editor and re-deploy (**Deploy → Manage
-deployments → edit → New version**). Apps Script doesn't auto-pull from
-GitHub — this repo is the source of truth / review trail, the paste is the
-deploy step.
+Edit `Code.gs` / `Index.html` here, commit to GitHub for history, then sync
+to the live project with [clasp](https://github.com/google/clasp) (Google's
+official CLI) instead of copy-pasting into the Apps Script editor:
+
+```bash
+cd apps-script
+npx @google/clasp push
+npx @google/clasp deploy --deploymentId AKfycbz1HM_Ud45vJh_6LjWkwKHOore8igJIj95k98a9pihWsLwXo-BF69MoYoZHDGTgtO5b --description "what changed"
+```
+
+`push` alone only updates the editor's HEAD copy — the live `/exec` URL is
+pinned to a specific deployment *version*, so the `deploy` step (targeting
+the deployment ID above, which is the one behind the current live URL) is
+what actually makes a change visible without changing the URL.
+
+One-time setup this required (already done for this project, documented in
+case it needs redoing): enable the "Google Apps Script API" toggle at
+https://script.google.com/home/usersettings, `npx @google/clasp login`, then
+`apps-script/.clasp.json` links this folder to script ID
+`1hUben5Cct8dtwoItbFb9vll00XZP2ML_jMBPZ7f4pk_MGdRY_SuffIoh`.
+`.claspignore` keeps `test.js`/`README.md` (Node-only files that would break
+if pushed as Apps Script source) out of what gets synced.
 
 ## Testing changes before pasting them in
 
