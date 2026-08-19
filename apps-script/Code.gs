@@ -1,9 +1,15 @@
 /**
- * Team Punch In/Out + Breaks + Team Status — Google Apps Script backend
+ * Team Punch In/Out + Breaks + Team Status — Google Apps Script backend.
  * Bind this script to the team's Google Sheet (Extensions > Apps Script).
- * Identity comes from Session.getActiveUser().getEmail() — the Google
- * account the visitor is signed in as — never from anything the browser
- * sends, so it cannot be spoofed by editing the page.
+ *
+ * This is a headless JSON API only — it serves no HTML. The frontend lives
+ * on GitHub Pages (../docs) and handles identity itself via Firebase Google
+ * Sign-In (restricted to @wiom.in). Every request here carries the caller's
+ * email as a plain parameter and a shared API key; both are checked against
+ * Employee Master server-side. This trades Apps Script's own per-visitor
+ * OAuth consent screen (which showed for every new user) for the same
+ * key+email model already proven in production by the team's other
+ * dashboard (wiom-l2) — not a security downgrade unique to this app.
  *
  * Roster (the admin-maintained planning tab) is read-only from here: it's
  * used to skip the geofence on WFH days, and as the live Status shown
@@ -18,12 +24,214 @@ const SHEET_ROSTER = 'Roster';
 const SHEET_SUMMARY = 'Monthly Summary';
 const GRACE_MINUTES_DEFAULT = 15;
 
+// Shared secret with the static frontend (docs/js/config.js). Not a secret
+// in the cryptographic sense — it's visible in client JS, same as wiom-l2's
+// API_KEY — it just keeps this URL from being casually crawled/guessed;
+// real authorization is the @wiom.in domain + Employee Master check below.
+const API_KEY = 'wiom-pft-roster-2026';
+const ALLOWED_DOMAIN = 'wiom.in';
+
+function jsonOut_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// ---------- Web app entry point (JSON API) ----------
+const ACTIONS = {
+  getCurrentUser: function (p) {
+    const res = resolveEmployee_(p.email);
+    if (res.error) return { error: res.error };
+    const settings = getSettings_();
+    return { emp: res.emp, isManager: isManager_(res.emp), officeName: settings.officeName, radius: settings.radius };
+  },
+  checkLocation: function (p) {
+    const settings = getSettings_();
+    const distance = Math.round(haversineMeters_(Number(p.lat), Number(p.lng), settings.lat, settings.lng));
+    return { distance: distance, radius: settings.radius, within: distance <= settings.radius, officeName: settings.officeName };
+  },
+  getDayState: function (p) {
+    const res = resolveEmployee_(p.email);
+    if (res.error) return { phase: 'not_started', breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, rosterCode: '', requiresGeofence: true };
+    const now = new Date();
+    const events = getTodayEvents_(res.emp.empId);
+    const state = computeDayState_(events);
+    const rosterCode = getTodayRosterCodeFor_(res.emp.name, now, res.emp.weeklyOff);
+    return Object.assign(serializeState_(state), { rosterCode: rosterCode, requiresGeofence: rosterCode.toUpperCase() !== 'WFH' });
+  },
+  recordEvent: function (p) {
+    const lock = LockService.getScriptLock();
+    lock.waitLock(15000);
+    try {
+      const res = resolveEmployee_(p.email);
+      if (res.error) throw new Error(res.error);
+      const emp = res.emp;
+      const type = p.type;
+      const lat = p.lat === '' || p.lat === undefined ? null : Number(p.lat);
+      const lng = p.lng === '' || p.lng === undefined ? null : Number(p.lng);
+      const now = new Date();
+      const eventsLog = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
+
+      const todayEvents = getTodayEvents_(emp.empId);
+      const state = computeDayState_(todayEvents);
+
+      if (!validTransition_(state.phase, state.breakType, type)) {
+        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, '', '', 'Blocked - invalid order']);
+        throw new Error(transitionErrorMessage_(state, type));
+      }
+
+      const settings = getSettings_();
+      const rosterCode = getTodayRosterCodeFor_(emp.name, now, emp.weeklyOff);
+      const requiresGeofence = rosterCode.toUpperCase() !== 'WFH';
+      const distance = Math.round(haversineMeters_(lat, lng, settings.lat, settings.lng));
+      const within = distance <= settings.radius;
+
+      if (requiresGeofence && !within) {
+        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, distance, 'No', 'Blocked - outside geofence']);
+        throw new Error('You are ' + distance + 'm from ' + settings.officeName + ' (allowed: ' + settings.radius + 'm). Move closer and try again.');
+      }
+
+      eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, distance, requiresGeofence ? (within ? 'Yes' : 'No') : 'N/A (WFH)', 'Success']);
+
+      const newState = computeDayState_(todayEvents.concat([{ type: type, timestamp: now }]));
+      updateDailySummary_(emp, now, newState, rosterCode, settings);
+
+      return { success: true, time: now.toLocaleTimeString(), distance: distance, state: serializeState_(newState), rosterCode: rosterCode, requiresGeofence: requiresGeofence };
+    } catch (err) {
+      return { success: false, message: err.message };
+    } finally {
+      lock.releaseLock();
+    }
+  },
+  getTeamRoster: function (p) {
+    requireManager_(p.email);
+    const offset = Number(p.weekOffset || 0);
+    const grid = getRosterGrid_();
+    const employees = listActiveEmployees_();
+    const today = new Date();
+    const dow = today.getDay();
+    const mondayOffset = (dow === 0 ? -6 : 1 - dow) + offset * 7;
+    const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + mondayOffset);
+    const days = dateRangeInfo_(monday, 7);
+    const todayKey = formatDdMmmYyyy_(today);
+
+    const rows = employees.map(function (e) {
+      return {
+        empId: e.empId, name: e.name,
+        codes: days.map(function (d) { return rosterCodeForDate_(grid, e.name, d.key) || '—'; })
+      };
+    });
+
+    return {
+      rangeLabel: formatRangeLabel_(days),
+      days: days.map(function (d) {
+        return { label: d.weekday + ' ' + d.day + '/' + (d.date.getMonth() + 1), isToday: d.key === todayKey };
+      }),
+      rows: rows
+    };
+  },
+  getMyMonthRoster: function (p) {
+    const res = resolveEmployee_(p.email);
+    if (res.error) throw new Error(res.error);
+    const grid = getRosterGrid_();
+    const now = new Date();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    const days = dateRangeInfo_(first, daysInMonth);
+    const todayKey = formatDdMmmYyyy_(now);
+
+    return {
+      month: Utilities.formatDate(now, Session.getScriptTimeZone(), 'MMMM yyyy'),
+      days: days.map(function (d) {
+        return { day: d.day, weekday: d.weekday, code: rosterCodeForDate_(grid, res.emp.name, d.key) || '—', isToday: d.key === todayKey };
+      })
+    };
+  },
+  getTeamStatus: function (p) {
+    requireManager_(p.email);
+
+    const now = new Date();
+    const tz = Session.getScriptTimeZone();
+    const todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+
+    const logSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_LOG);
+    const logData = logSh.getDataRange().getValues();
+    const todayRows = {};
+    for (let i = 1; i < logData.length; i++) {
+      const r = logData[i];
+      if (!r[0]) continue;
+      if (Utilities.formatDate(new Date(r[0]), tz, 'yyyy-MM-dd') === todayStr) {
+        todayRows[String(r[1])] = r;
+      }
+    }
+
+    const eventsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
+    const eventsData = eventsSh.getDataRange().getValues();
+    const lastEventAt = {};
+    for (let i = 1; i < eventsData.length; i++) {
+      const r = eventsData[i];
+      if (!r[0] || r[9] !== 'Success') continue;
+      const ts = new Date(r[0]);
+      if (Utilities.formatDate(ts, tz, 'yyyy-MM-dd') !== todayStr) continue;
+      const empId = String(r[1]);
+      if (!lastEventAt[empId] || ts > lastEventAt[empId]) lastEventAt[empId] = ts;
+    }
+
+    const employees = listActiveEmployees_();
+    const rosterGrid = getRosterGrid_();
+
+    const results = employees.map(function (e) {
+      const since = lastEventAt[e.empId] ? lastEventAt[e.empId].toISOString() : null;
+      const row = todayRows[e.empId];
+      if (row) {
+        return {
+          empId: e.empId, name: e.name, department: e.department,
+          punchIn: row[4] instanceof Date ? row[4].toISOString() : (row[4] || null),
+          punchOut: row[5] instanceof Date ? row[5].toISOString() : (row[5] || null),
+          lunch: row[6] || 0, tea: row[7] || 0, bio: row[8] || 0, totalBreak: row[9] || 0, gross: row[10] || '',
+          netHours: row[11] || '', lateBy: row[12] || 0, status: row[13] || '', statusSince: since
+        };
+      }
+      const rosterCode = rosterCodeFromGrid_(rosterGrid, e.name, now, e.weeklyOff);
+      return {
+        empId: e.empId, name: e.name, department: e.department,
+        punchIn: null, punchOut: null, lunch: 0, tea: 0, bio: 0, totalBreak: 0, gross: '',
+        netHours: '', lateBy: 0, status: rosterCode || 'Not Started', statusSince: since
+      };
+    });
+
+    return { employees: results, asOf: now.toISOString() };
+  },
+  getRecentLog: function (p) {
+    requireManager_(p.email);
+    const n = Number(p.limit || 30);
+
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
+    const data = sh.getDataRange().getValues();
+    const out = [];
+    for (let i = 1; i < data.length; i++) {
+      const r = data[i];
+      if (!r[0] || r[9] !== 'Success') continue;
+      out.push({
+        timestamp: new Date(r[0]).toISOString(),
+        name: r[2],
+        type: r[4],
+        label: EVENT_LABEL[r[4]] || r[4]
+      });
+    }
+    out.sort(function (a, b) { return new Date(b.timestamp) - new Date(a.timestamp); });
+    return out.slice(0, n);
+  }
+};
+
 function doGet(e) {
-  return HtmlService.createTemplateFromFile('Index')
-    .evaluate()
-    .setTitle('PFT Team Attendance')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  const p = (e && e.parameter) || {};
+  try {
+    if (p.key !== API_KEY) return jsonOut_({ error: 'Unauthorized' });
+    const handler = ACTIONS[p.action];
+    if (!handler) return jsonOut_({ error: 'Unknown action: ' + p.action });
+    return jsonOut_(handler(p));
+  } catch (err) {
+    return jsonOut_({ error: err.message });
+  }
 }
 
 // ---------- One-time setup ----------
@@ -141,8 +349,23 @@ function isManager_(emp) {
   return /team\s*lead|manager/i.test(String(emp.designation || ''));
 }
 
-function requireManager_() {
-  const res = currentEmployee_();
+// Identity now comes from the client (Firebase-authenticated email passed as
+// a request param), not Session.getActiveUser() — the deployment runs as
+// "Execute as: Me / Anyone" so there's no per-visitor Google account to read
+// server-side. Still verified against @wiom.in and Employee Master below.
+function resolveEmployee_(email) {
+  if (!email) return { error: 'Could not detect your signed-in email. Please sign in again.' };
+  if (!new RegExp('@' + ALLOWED_DOMAIN.replace('.', '\\.') + '$', 'i').test(String(email).trim())) {
+    return { error: 'Only @' + ALLOWED_DOMAIN + ' accounts are allowed.' };
+  }
+  const emp = findEmployeeByEmail_(email);
+  if (!emp) return { error: 'Email ' + email + ' is not registered in Employee Master. Contact your admin.' };
+  if (emp.status !== 'Active') return { error: 'Your record is marked "' + emp.status + '". Contact your admin.' };
+  return { emp: emp };
+}
+
+function requireManager_(email) {
+  const res = resolveEmployee_(email);
   if (res.error) throw new Error(res.error);
   if (!isManager_(res.emp)) throw new Error('Only managers can view this.');
   return res.emp;
@@ -166,15 +389,6 @@ function listActiveEmployees_() {
   return out;
 }
 
-function currentEmployee_() {
-  const email = Session.getActiveUser().getEmail();
-  if (!email) return { error: 'Could not detect your Google account email. Open this app while signed in to your official work Google account.' };
-  const emp = findEmployeeByEmail_(email);
-  if (!emp) return { error: 'Email ' + email + ' is not registered in Employee Master. Contact your admin.' };
-  if (emp.status !== 'Active') return { error: 'Your record is marked "' + emp.status + '". Contact your admin.' };
-  return { emp: emp };
-}
-
 function parseShiftTime_(shiftStart, referenceDate) {
   let h, m;
   if (shiftStart instanceof Date) {
@@ -192,10 +406,8 @@ function parseShiftTime_(shiftStart, referenceDate) {
   return d;
 }
 
-// Time-formatted Sheets cells read back as real Date objects. Sending one
-// nested inside an object across the google.script.run bridge can silently
-// fail to serialize (client gets null, server logs "Completed" — no error
-// anywhere to see), so anything crossing that bridge gets stringified first.
+// Time-formatted Sheets cells read back as real Date objects — stringify
+// before anything crosses a serialization boundary.
 function timeCellToString_(v) {
   if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'HH:mm');
   return v;
@@ -301,57 +513,6 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 function formatRangeLabel_(days) {
   const first = days[0].date, last = days[days.length - 1].date;
   return first.getDate() + ' ' + MONTH_ABBR[first.getMonth()] + ' – ' + last.getDate() + ' ' + MONTH_ABBR[last.getMonth()] + ' ' + last.getFullYear();
-}
-
-// Manager-only: one Mon-Sun week's Roster codes for every active employee,
-// for the navigable grid at the top of Team Status. weekOffset: 0 = the
-// week containing today, -1 = previous week, +1 = next week, etc.
-function getTeamRoster(weekOffset) {
-  requireManager_();
-  const offset = weekOffset || 0;
-  const grid = getRosterGrid_();
-  const employees = listActiveEmployees_();
-  const today = new Date();
-  const dow = today.getDay();
-  const mondayOffset = (dow === 0 ? -6 : 1 - dow) + offset * 7;
-  const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + mondayOffset);
-  const days = dateRangeInfo_(monday, 7);
-  const todayKey = formatDdMmmYyyy_(today);
-
-  const rows = employees.map(function (e) {
-    return {
-      empId: e.empId, name: e.name,
-      codes: days.map(function (d) { return rosterCodeForDate_(grid, e.name, d.key) || '—'; })
-    };
-  });
-
-  return {
-    rangeLabel: formatRangeLabel_(days),
-    days: days.map(function (d) {
-      return { label: d.weekday + ' ' + d.day + '/' + (d.date.getMonth() + 1), isToday: d.key === todayKey };
-    }),
-    rows: rows
-  };
-}
-
-// Any signed-in employee: their own Roster codes for the current calendar
-// month, for the strip at the top of My Attendance.
-function getMyMonthRoster() {
-  const res = currentEmployee_();
-  if (res.error) throw new Error(res.error);
-  const grid = getRosterGrid_();
-  const now = new Date();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const first = new Date(now.getFullYear(), now.getMonth(), 1);
-  const days = dateRangeInfo_(first, daysInMonth);
-  const todayKey = formatDdMmmYyyy_(now);
-
-  return {
-    month: Utilities.formatDate(now, Session.getScriptTimeZone(), 'MMMM yyyy'),
-    days: days.map(function (d) {
-      return { day: d.day, weekday: d.weekday, code: rosterCodeForDate_(grid, res.emp.name, d.key) || '—', isToday: d.key === todayKey };
-    })
-  };
 }
 
 // ---------- Day-state engine ----------
@@ -470,143 +631,13 @@ function updateDailySummary_(emp, now, state, rosterCode, settings) {
   ]]);
 }
 
-// ---------- Client-facing API ----------
-function getCurrentUser() {
-  const res = currentEmployee_();
-  if (res.error) return { error: res.error };
-  const settings = getSettings_();
-  return { emp: res.emp, isManager: isManager_(res.emp), officeName: settings.officeName, radius: settings.radius };
-}
-
-function checkLocation(lat, lng) {
-  const settings = getSettings_();
-  const distance = Math.round(haversineMeters_(lat, lng, settings.lat, settings.lng));
-  return { distance: distance, radius: settings.radius, within: distance <= settings.radius, officeName: settings.officeName };
-}
-
-// Same nested-Date risk as timeCellToString_ above: punchIn/punchOut are
-// Date objects one level deep inside the returned object, which is the
-// pattern that silently broke getCurrentUser(). Stringify before it crosses
-// the bridge rather than relying on Apps Script's nested-Date handling.
+// Dates serialized to ISO strings before crossing into the JSON response —
+// nested Date objects don't survive JSON.stringify meaningfully otherwise.
 function serializeState_(state) {
   return Object.assign({}, state, {
     punchIn: state.punchIn ? state.punchIn.toISOString() : null,
     punchOut: state.punchOut ? state.punchOut.toISOString() : null
   });
-}
-
-function getDayState() {
-  const res = currentEmployee_();
-  if (res.error) return { phase: 'not_started', breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, rosterCode: '', requiresGeofence: true };
-  const now = new Date();
-  const events = getTodayEvents_(res.emp.empId);
-  const state = computeDayState_(events);
-  const rosterCode = getTodayRosterCodeFor_(res.emp.name, now, res.emp.weeklyOff);
-  return Object.assign(serializeState_(state), { rosterCode: rosterCode, requiresGeofence: rosterCode.toUpperCase() !== 'WFH' });
-}
-
-function recordEvent(type, lat, lng) {
-  const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
-  try {
-    const res = currentEmployee_();
-    if (res.error) throw new Error(res.error);
-    const emp = res.emp;
-    const now = new Date();
-    const eventsLog = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
-
-    const todayEvents = getTodayEvents_(emp.empId);
-    const state = computeDayState_(todayEvents);
-
-    if (!validTransition_(state.phase, state.breakType, type)) {
-      eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, '', '', 'Blocked - invalid order']);
-      throw new Error(transitionErrorMessage_(state, type));
-    }
-
-    const settings = getSettings_();
-    const rosterCode = getTodayRosterCodeFor_(emp.name, now, emp.weeklyOff);
-    const requiresGeofence = rosterCode.toUpperCase() !== 'WFH';
-    const distance = Math.round(haversineMeters_(lat, lng, settings.lat, settings.lng));
-    const within = distance <= settings.radius;
-
-    if (requiresGeofence && !within) {
-      eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, distance, 'No', 'Blocked - outside geofence']);
-      throw new Error('You are ' + distance + 'm from ' + settings.officeName + ' (allowed: ' + settings.radius + 'm). Move closer and try again.');
-    }
-
-    eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, distance, requiresGeofence ? (within ? 'Yes' : 'No') : 'N/A (WFH)', 'Success']);
-
-    const newState = computeDayState_(todayEvents.concat([{ type: type, timestamp: now }]));
-    updateDailySummary_(emp, now, newState, rosterCode, settings);
-
-    return { success: true, time: now.toLocaleTimeString(), distance: distance, state: serializeState_(newState), rosterCode: rosterCode, requiresGeofence: requiresGeofence };
-  } catch (err) {
-    return { success: false, message: err.message };
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-// Live team status: today's Daily Attendance Log row per active employee,
-// falling back to their Roster code if they haven't punched in yet. Fetches
-// Roster once and reuses it across everyone, rather than once per employee.
-function getTeamStatus() {
-  requireManager_();
-
-  const now = new Date();
-  const tz = Session.getScriptTimeZone();
-  const todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
-
-  const logSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_LOG);
-  const logData = logSh.getDataRange().getValues();
-  const todayRows = {};
-  for (let i = 1; i < logData.length; i++) {
-    const r = logData[i];
-    if (!r[0]) continue;
-    if (Utilities.formatDate(new Date(r[0]), tz, 'yyyy-MM-dd') === todayStr) {
-      todayRows[String(r[1])] = r;
-    }
-  }
-
-  // Last successful event timestamp per employee today — i.e. when their
-  // CURRENT status began (break start, punch-in, punch-out), not just the
-  // day's punch in/out times. One read of the whole log, not per-employee.
-  const eventsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
-  const eventsData = eventsSh.getDataRange().getValues();
-  const lastEventAt = {};
-  for (let i = 1; i < eventsData.length; i++) {
-    const r = eventsData[i];
-    if (!r[0] || r[9] !== 'Success') continue;
-    const ts = new Date(r[0]);
-    if (Utilities.formatDate(ts, tz, 'yyyy-MM-dd') !== todayStr) continue;
-    const empId = String(r[1]);
-    if (!lastEventAt[empId] || ts > lastEventAt[empId]) lastEventAt[empId] = ts;
-  }
-
-  const employees = listActiveEmployees_();
-  const rosterGrid = getRosterGrid_();
-
-  const results = employees.map(function (e) {
-    const since = lastEventAt[e.empId] ? lastEventAt[e.empId].toISOString() : null;
-    const row = todayRows[e.empId];
-    if (row) {
-      return {
-        empId: e.empId, name: e.name, department: e.department,
-        punchIn: row[4] instanceof Date ? row[4].toISOString() : (row[4] || null),
-        punchOut: row[5] instanceof Date ? row[5].toISOString() : (row[5] || null),
-        lunch: row[6] || 0, tea: row[7] || 0, bio: row[8] || 0, totalBreak: row[9] || 0, gross: row[10] || '',
-        netHours: row[11] || '', lateBy: row[12] || 0, status: row[13] || '', statusSince: since
-      };
-    }
-    const rosterCode = rosterCodeFromGrid_(rosterGrid, e.name, now, e.weeklyOff);
-    return {
-      empId: e.empId, name: e.name, department: e.department,
-      punchIn: null, punchOut: null, lunch: 0, tea: 0, bio: 0, totalBreak: 0, gross: '',
-      netHours: '', lateBy: 0, status: rosterCode || 'Not Started', statusSince: since
-    };
-  });
-
-  return { employees: results, asOf: now.toISOString() };
 }
 
 const EVENT_LABEL = {
@@ -615,29 +646,6 @@ const EVENT_LABEL = {
   TEA_START: 'Started Tea Break', TEA_END: 'Ended Tea Break',
   BIO_START: 'Started Bio Break', BIO_END: 'Ended Bio Break'
 };
-
-// Manager-only: most recent successful punch/break events across the whole
-// team, newest first — the raw audit trail behind the summarized status.
-function getRecentLog(limit) {
-  requireManager_();
-  const n = limit || 30;
-
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
-  const data = sh.getDataRange().getValues();
-  const out = [];
-  for (let i = 1; i < data.length; i++) {
-    const r = data[i];
-    if (!r[0] || r[9] !== 'Success') continue;
-    out.push({
-      timestamp: new Date(r[0]).toISOString(),
-      name: r[2],
-      type: r[4],
-      label: EVENT_LABEL[r[4]] || r[4]
-    });
-  }
-  out.sort(function (a, b) { return new Date(b.timestamp) - new Date(a.timestamp); });
-  return out.slice(0, n);
-}
 
 // ---------- Monthly Summary ----------
 function countWorkingDaysSoFar_(weeklyOffName, refDate) {

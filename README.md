@@ -1,10 +1,12 @@
 # PFT Attendance Dashboard
 
 > **Status: parked.** After hitting deployment friction with Railway/Firebase
-> unrelated to the app code, the team went with the Apps Script version
-> instead — see [`apps-script/`](apps-script/) for the current, live approach.
-> Everything below describes this Node app, kept here for reference in case
-> a hosted version is worth revisiting later.
+> unrelated to the app code, the team went with a GitHub Pages + Apps Script
+> version instead — static frontend in [`docs/`](docs/) (Firebase Google
+> Sign-In for identity), backend in [`apps-script/`](apps-script/) (a
+> headless JSON API bound to the Sheet). Everything below describes this
+> Node app, kept here for reference in case a hosted version is worth
+> revisiting later.
 
 Live, geofenced punch in/out + Lunch/Tea/Bio break tracker for the team, with
 a real-time team status view. Identity comes from Firebase Auth (Google

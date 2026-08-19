@@ -1,153 +1,7 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <base target="_top">
-  <style>
-    :root{
-      --bg:#0d0a13; --surface:#1a1621; --surface-2:#221c2c;
-      --border:rgba(255,255,255,.10); --border-strong:rgba(255,255,255,.18);
-      --text:#ffffff; --text-secondary:#c3c2b7; --text-muted:#898781;
-      --brand:#ec1c7a; --brand-dim:rgba(236,28,122,.16);
-      --green:#0ca30c; --green-bg:rgba(12,163,12,.14);
-      --red:#e5484d; --red-bg:rgba(229,72,77,.14);
-      --amber:#fab219; --amber-bg:rgba(250,178,25,.14);
-      --blue:#3987e5; --blue-bg:rgba(57,135,229,.14);
-      --grey:#898781; --grey-bg:rgba(137,135,129,.14);
-    }
-    *{box-sizing:border-box;}
-    html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:"Segoe UI",Arial,sans-serif;}
-    body{min-height:100vh;position:relative;overflow-x:hidden;}
-    .bg-logo{position:fixed;inset:0;background-repeat:no-repeat;background-position:center 15%;background-size:min(70vw,420px);opacity:.05;filter:grayscale(1) brightness(2);pointer-events:none;z-index:0;}
-    .appbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;background:var(--surface);border-bottom:1px solid var(--border);box-shadow:0 2px 14px rgba(0,0,0,.35);}
-    .brand{display:flex;align-items:center;gap:10px;}
-    .brand-mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--brand),#8a1358);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:16px;color:#fff;flex:none;}
-    .brand-name{font-weight:800;font-size:15px;color:var(--brand);letter-spacing:.2px;}
-    .brand-sub{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.6px;}
-    .appbar-right{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);}
-    .who-name{font-weight:700;color:var(--text);}
-    .role-pill{padding:2px 9px;border-radius:20px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;border:1px solid;}
-    .role-pill.manager{color:var(--brand);border-color:var(--brand);background:var(--brand-dim);}
-    .role-pill.advisor{color:var(--blue);border-color:var(--blue);background:var(--blue-bg);}
+import { onAuthReady, signIn, signOutUser } from './auth.js';
+import { api } from './db.js';
 
-    .wrap{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:20px 16px 40px;min-height:100vh;}
-    .narrow{max-width:480px;margin:0 auto;}
-    .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 6px 20px rgba(0,0,0,.28);}
-    h1{font-size:19px;margin:0 0 4px;color:var(--text);}
-    .section-title{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin:0 0 14px;}
-    .sub{color:var(--text-muted);font-size:12px;margin-bottom:16px;}
-    .clock{font-size:32px;font-weight:800;text-align:center;color:var(--text);margin:6px 0 14px;font-variant-numeric:tabular-nums;letter-spacing:1px;}
-    .row{display:flex;justify-content:space-between;align-items:center;font-size:14px;padding:8px 0;border-bottom:1px solid var(--border);}
-    .row:last-child{border-bottom:none;}
-    .label{color:var(--text-muted);}
-
-    button{width:100%;padding:15px;font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;border:none;border-radius:12px;color:#fff;margin-top:10px;cursor:pointer;transition:transform .08s ease,filter .15s ease;}
-    button:active{transform:scale(.98);}
-    .btn-in{background:linear-gradient(135deg,#16c05e,#0ca30c);box-shadow:0 6px 18px rgba(12,163,12,.35);}
-    .btn-out{background:linear-gradient(135deg,#f0555a,var(--red));box-shadow:0 6px 18px rgba(229,72,77,.35);}
-    .btn-break{background:linear-gradient(135deg,#ffc247,var(--amber));color:#241a02;box-shadow:0 6px 18px rgba(250,178,25,.3);}
-    .btn-end{background:linear-gradient(135deg,#5aa1ec,var(--blue));box-shadow:0 6px 18px rgba(57,135,229,.35);}
-    button:disabled{background:var(--surface-2);color:var(--text-muted);box-shadow:none;cursor:not-allowed;}
-    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
-    .grid2 button{margin-top:0;}
-
-    .status{text-align:center;font-size:12.5px;margin-top:10px;padding:10px;border-radius:10px;border:1px solid;}
-    .ok{background:var(--green-bg);color:#3ddc6f;border-color:rgba(12,163,12,.4);}
-    .err{background:var(--red-bg);color:#ff8388;border-color:rgba(229,72,77,.4);}
-    .info{background:var(--amber-bg);color:var(--amber);border-color:rgba(250,178,25,.4);}
-    .loading{text-align:center;color:var(--text-muted);padding:60px 0;}
-
-    .badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:800;border:1px solid;}
-    .badge-ok{background:var(--green-bg);color:#3ddc6f;border-color:rgba(12,163,12,.4);}
-    .badge-bad{background:var(--red-bg);color:#ff8388;border-color:rgba(229,72,77,.4);}
-    .refresh{display:block;text-align:center;font-size:12px;color:var(--blue);margin-top:8px;text-decoration:none;}
-
-    .phasebar{text-align:center;font-weight:800;font-size:15px;padding:12px;border-radius:12px;margin-bottom:14px;border:1.5px solid;text-transform:uppercase;letter-spacing:.5px;}
-    .phase-working{background:var(--green-bg);color:#3ddc6f;border-color:rgba(12,163,12,.45);}
-    .phase-break{background:var(--amber-bg);color:var(--amber);border-color:rgba(250,178,25,.45);}
-    .phase-idle{background:var(--grey-bg);color:var(--text-secondary);border-color:var(--border-strong);}
-    .phase-done{background:var(--blue-bg);color:#7ab1f2;border-color:rgba(57,135,229,.45);}
-
-    .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px;}
-    .stat-tile{border:1.5px solid var(--border-strong);border-radius:12px;padding:12px 10px;text-align:center;background:var(--surface-2);}
-    .stat-tile .stat-value{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;}
-    .stat-tile .stat-label{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-top:3px;}
-    .stat-tile.t-blue{border-color:rgba(57,135,229,.5);} .stat-tile.t-blue .stat-value{color:#7ab1f2;}
-    .stat-tile.t-amber{border-color:rgba(250,178,25,.5);} .stat-tile.t-amber .stat-value{color:var(--amber);}
-    .stat-tile.t-green{border-color:rgba(12,163,12,.5);} .stat-tile.t-green .stat-value{color:#3ddc6f;}
-
-    .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3ddc6f;margin-right:6px;box-shadow:0 0 0 0 rgba(61,220,111,.6);animation:pulse 1.6s infinite;}
-    @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,111,.55);}70%{box-shadow:0 0 0 7px rgba(61,220,111,0);}100%{box-shadow:0 0 0 0 rgba(61,220,111,0);}}
-
-    .team-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 4px 11px 12px;border-left:3px solid var(--border-strong);border-bottom:1px solid var(--border);font-size:13px;margin-bottom:2px;}
-    .team-row:last-child{border-bottom:none;}
-    .team-name{font-weight:700;color:var(--text);}
-    .team-sub{color:var(--text-muted);font-size:11px;margin-top:2px;}
-
-    .status-pill{padding:4px 11px;border-radius:20px;font-size:10.5px;font-weight:800;white-space:nowrap;border:1px solid;text-transform:uppercase;letter-spacing:.3px;}
-    .st-Present,.st-Working{background:var(--green-bg);color:#3ddc6f;border-color:rgba(12,163,12,.45);}
-    .team-row:has(.st-Present),.team-row:has(.st-Working){border-left-color:var(--green);}
-    .st-Late{background:var(--red-bg);color:#ff8388;border-color:rgba(229,72,77,.45);}
-    .team-row:has(.st-Late){border-left-color:var(--red);}
-    .st-HalfDay{background:var(--amber-bg);color:var(--amber);border-color:rgba(250,178,25,.45);}
-    .team-row:has(.st-HalfDay){border-left-color:var(--amber);}
-    .st-LunchBreak,.st-TeaBreak,.st-BioBreak{background:var(--amber-bg);color:var(--amber);border-color:rgba(250,178,25,.45);}
-    .team-row:has(.st-LunchBreak),.team-row:has(.st-TeaBreak),.team-row:has(.st-BioBreak){border-left-color:var(--amber);}
-    .st-WO,.st-Holiday,.st-NotStarted{background:var(--grey-bg);color:var(--text-secondary);border-color:var(--border-strong);}
-    .st-L,.st-UP{background:var(--blue-bg);color:#7ab1f2;border-color:rgba(57,135,229,.45);}
-    .team-row:has(.st-L),.team-row:has(.st-UP){border-left-color:var(--blue);}
-
-    .event-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;}
-    .ed-in,.ed-end{background:var(--green);} .ed-out{background:var(--red);} .ed-start{background:var(--amber);}
-
-    .roster-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
-    .roster-table{border-collapse:separate;border-spacing:0 4px;width:100%;font-size:11px;}
-    .roster-table th{padding:4px 6px;text-align:center;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;line-height:1.5;}
-    .roster-table th.name-col,.roster-table td.name-col{text-align:left;position:sticky;left:0;background:var(--surface);padding-right:12px;}
-    .roster-table th.today,.roster-table td.today{background:var(--brand-dim);border-radius:8px;}
-    .roster-table td{padding:5px 4px;text-align:center;white-space:nowrap;}
-    .roster-table td.name-col{font-weight:700;color:var(--text);font-size:12px;}
-    .rc{display:inline-block;min-width:30px;padding:3px 5px;border-radius:6px;font-size:10px;font-weight:800;border:1px solid;}
-    .rc-P{background:var(--green-bg);color:#3ddc6f;border-color:rgba(12,163,12,.4);}
-    .rc-WFH,.rc-L{background:var(--blue-bg);color:#7ab1f2;border-color:rgba(57,135,229,.4);}
-    .rc-WO,.rc-Holiday,.rc-empty{background:var(--grey-bg);color:var(--text-secondary);border-color:var(--border-strong);}
-    .rc-HD{background:var(--amber-bg);color:var(--amber);border-color:rgba(250,178,25,.4);}
-
-    .roster-nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;}
-    .roster-nav-btn{width:auto;display:inline-flex;align-items:center;gap:4px;padding:8px 14px;font-size:12px;font-weight:700;text-transform:none;letter-spacing:0;background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text-secondary);border-radius:9px;margin-top:0;cursor:pointer;}
-    .roster-nav-btn:hover{color:var(--text);border-color:var(--brand);}
-    .roster-range{font-weight:800;font-size:14px;color:var(--text);}
-    .roster-nav-right{display:flex;gap:8px;}
-
-    .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border);}
-    .legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);}
-
-    .section-heading{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin:28px 0 12px;padding-top:4px;}
-
-    .data-table-wrap{overflow-x:auto;}
-    .data-table{width:100%;border-collapse:collapse;font-size:12.5px;}
-    .data-table th{text-align:left;padding:9px 12px;color:var(--text-muted);font-weight:700;text-transform:uppercase;font-size:10.5px;letter-spacing:.4px;border-bottom:1px solid var(--border-strong);white-space:nowrap;}
-    .data-table td{padding:10px 12px;border-bottom:1px solid var(--border);white-space:nowrap;}
-    .data-table tr:last-child td{border-bottom:none;}
-    .data-table td.dt-name{font-weight:700;color:var(--text);}
-    .data-table tr:hover td{background:var(--surface-2);}
-  </style>
-</head>
-<body>
-  <div class="bg-logo" id="bgLogo" aria-hidden="true"></div>
-  <header class="appbar">
-    <div class="brand">
-      <div class="brand-mark">W</div>
-      <div>
-        <div class="brand-name">PFT Attendance</div>
-        <div class="brand-sub">Wiom &middot; Partner Follow-up Team</div>
-      </div>
-    </div>
-    <div class="appbar-right" id="appbarRight"></div>
-  </header>
-  <div class="wrap"><div id="app" class="loading">Loading…</div></div>
-
-<script>
+let CURRENT = null; // { email, name } from Firebase
 let EMP = null;
 let IS_MANAGER = false;
 let LAST_LOC = null;
@@ -175,7 +29,6 @@ function rosterCodeClass(code) {
   return 'rc-empty';
 }
 
-// Single-row strip for one employee's month (My Attendance).
 function renderMonthRosterTable(days) {
   let html = '<div class="roster-scroll" id="monthRosterScroll"><table class="roster-table"><thead><tr>';
   days.forEach(function (d) { html += '<th class="' + (d.isToday ? 'today' : '') + '">' + d.weekday + '<br>' + d.day + '</th>'; });
@@ -185,7 +38,6 @@ function renderMonthRosterTable(days) {
   return html;
 }
 
-// Multi-employee weekly grid (Team Status): one row per advisor, one column per day.
 function renderTeamRosterTable(roster) {
   let html = '<div class="roster-scroll"><table class="roster-table"><thead><tr><th class="name-col">Advisor</th>';
   roster.days.forEach(function (d) { html += '<th class="' + (d.isToday ? 'today' : '') + '">' + d.label + '</th>'; });
@@ -207,8 +59,43 @@ function renderTeamRosterTable(roster) {
   return html;
 }
 
+function fmtTime(v) { return v ? new Date(v).toLocaleTimeString() : '—'; }
+function fmtHours(v) { return (v === '' || v === null || v === undefined) ? '—' : v + 'h'; }
+
+// ---------- Sign-in screen ----------
+function renderSignIn(errorMsg) {
+  const right = document.getElementById('appbarRight');
+  if (right) right.innerHTML = '';
+  document.getElementById('app').innerHTML =
+    '<div class="narrow"><div class="card" style="text-align:center;padding:44px 24px;">' +
+    '<div class="brand-mark" style="width:56px;height:56px;font-size:28px;margin:0 auto 18px;">W</div>' +
+    '<h1 style="margin-bottom:6px;">PFT Attendance</h1>' +
+    '<div class="sub">Wiom &middot; Partner Follow-up Team</div>' +
+    (errorMsg ? '<div class="status err" style="margin:16px 0;">' + errorMsg + '</div>' : '') +
+    '<button id="signInBtn" class="btn-in" style="margin-top:20px;">Sign in with Google</button>' +
+    '<div class="sub" style="margin-top:14px;">Only @wiom.in accounts are allowed</div>' +
+    '</div></div>';
+  document.getElementById('signInBtn').addEventListener('click', function () {
+    signIn().catch(function (err) { renderSignIn(err.message); });
+  });
+}
+
+// ---------- Boot / identity ----------
 function boot() {
-  google.script.run.withSuccessHandler(onUser).withFailureHandler(onFatal).getCurrentUser();
+  onAuthReady(function (user, errorCode) {
+    if (teamPollHandle) { clearInterval(teamPollHandle); teamPollHandle = null; }
+    if (!user) {
+      renderSignIn(errorCode === 'unauthorized_domain' ? 'Only @wiom.in accounts are allowed.' : null);
+      return;
+    }
+    CURRENT = user;
+    loadCurrentUser();
+  });
+}
+
+function loadCurrentUser() {
+  document.getElementById('app').innerHTML = '<div class="loading">Loading…</div>';
+  api({ action: 'getCurrentUser', email: CURRENT.email }).then(onUser).catch(onFatal);
 }
 
 function onFatal(err) {
@@ -219,14 +106,18 @@ function onFatal(err) {
 function onUser(res) {
   if (res.error) {
     document.getElementById('app').innerHTML =
-      '<div class="card"><h1>Access denied</h1><div class="status err">' + res.error + '</div></div>';
+      '<div class="card"><h1>Access denied</h1><div class="status err">' + res.error + '</div>' +
+      '<button id="signOutBtn" style="margin-top:14px;">Sign out</button></div>';
+    document.getElementById('signOutBtn').addEventListener('click', function () { signOutUser(); });
     return;
   }
   EMP = res.emp;
   IS_MANAGER = !!res.isManager;
   document.getElementById('appbarRight').innerHTML =
     '<span class="who-name">' + EMP.name + '</span>' +
-    '<span class="role-pill ' + (IS_MANAGER ? 'manager">Manager' : 'advisor">Advisor') + '</span>';
+    '<span class="role-pill ' + (IS_MANAGER ? 'manager">Manager' : 'advisor">Advisor') + '</span>' +
+    '<a href="#" id="signOutLink" style="color:var(--text-muted);font-size:12px;margin-left:4px;">Sign out</a>';
+  document.getElementById('signOutLink').addEventListener('click', function (e) { e.preventDefault(); signOutUser(); });
   renderShell();
   if (!IS_MANAGER) {
     // Managers only need the team overview — no personal punch flow, no
@@ -239,17 +130,17 @@ function onUser(res) {
 }
 
 function refreshDayState() {
-  google.script.run.withSuccessHandler(function (s) { STATE = s; renderMe(); }).getDayState();
+  api({ action: 'getDayState', email: CURRENT.email }).then(function (s) { STATE = s; renderMe(); });
 }
 
 function loadMyRoster() {
-  google.script.run.withSuccessHandler(function (r) {
+  api({ action: 'getMyMonthRoster', email: CURRENT.email }).then(function (r) {
     MY_ROSTER = r;
     renderMe();
     const scrollEl = document.getElementById('monthRosterScroll');
     const todayCell = scrollEl && scrollEl.querySelector('.today');
     if (todayCell) todayCell.scrollIntoView({ inline: 'center', block: 'nearest' });
-  }).withFailureHandler(function () { /* non-fatal — rest of the page still works */ }).getMyMonthRoster();
+  }).catch(function () { /* non-fatal — rest of the page still works */ });
 }
 
 function requestLocation() {
@@ -260,14 +151,12 @@ function requestLocation() {
   }
   navigator.geolocation.getCurrentPosition(function (pos) {
     LAST_LOC = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    google.script.run.withSuccessHandler(function (info) { LOC_INFO = info; renderMe(); }).checkLocation(LAST_LOC.lat, LAST_LOC.lng);
+    api({ action: 'checkLocation', lat: LAST_LOC.lat, lng: LAST_LOC.lng }).then(function (info) { LOC_INFO = info; renderMe(); });
   }, function () {
     LOC_INFO = { error: 'Location permission denied or unavailable. Enable location access and reload this page.' };
     renderMe();
   }, { enableHighAccuracy: true, timeout: 15000 });
 }
-
-function fmtTime(v) { return v ? new Date(v).toLocaleTimeString() : '—'; }
 
 // Each role gets exactly one view — advisors their own attendance, managers
 // the team overview — with no tab switcher between them. Advisors can't
@@ -311,8 +200,6 @@ function renderMe() {
   html += '<a href="#" class="refresh" id="refreshLoc">Refresh location</a></div>';
 
   if (!IS_MANAGER) {
-    // Only advisors have rows in Roster — managers/TLs don't, so this would
-    // just render blank for them.
     html += '<div class="card"><h1>' + (MY_ROSTER ? MY_ROSTER.month : 'This Month') + ' Roster</h1>';
     html += MY_ROSTER ? renderMonthRosterTable(MY_ROSTER.days) : '<div class="loading">Loading…</div>';
     html += '</div>';
@@ -369,25 +256,25 @@ function renderMe() {
 function onAction(type, btn) {
   document.querySelectorAll('button[data-type]').forEach(function (b) { b.disabled = true; });
   btn.textContent = 'Please wait…';
-  google.script.run.withSuccessHandler(function (res) {
-    if (res.success) {
-      STATE = Object.assign({}, res.state, { rosterCode: res.rosterCode, requiresGeofence: res.requiresGeofence });
+  api({ action: 'recordEvent', email: CURRENT.email, type: type, lat: LAST_LOC ? LAST_LOC.lat : '', lng: LAST_LOC ? LAST_LOC.lng : '' })
+    .then(function (res) {
+      if (res.success) {
+        STATE = Object.assign({}, res.state, { rosterCode: res.rosterCode, requiresGeofence: res.requiresGeofence });
+        renderMe();
+        const msg = document.getElementById('msg');
+        if (msg) msg.innerHTML = '<div class="status ok">Recorded at ' + res.time + '.</div>';
+      } else {
+        renderMe();
+        const msg = document.getElementById('msg');
+        if (msg) msg.innerHTML = '<div class="status err">' + res.message + '</div>';
+      }
+    })
+    .catch(function (err) {
       renderMe();
       const msg = document.getElementById('msg');
-      if (msg) msg.innerHTML = '<div class="status ok">Recorded at ' + res.time + '.</div>';
-    } else {
-      renderMe();
-      const msg = document.getElementById('msg');
-      if (msg) msg.innerHTML = '<div class="status err">' + res.message + '</div>';
-    }
-  }).withFailureHandler(function (err) {
-    renderMe();
-    const msg = document.getElementById('msg');
-    if (msg) msg.innerHTML = '<div class="status err">' + err.message + '</div>';
-  }).recordEvent(type, LAST_LOC ? LAST_LOC.lat : null, LAST_LOC ? LAST_LOC.lng : null);
+      if (msg) msg.innerHTML = '<div class="status err">' + err.message + '</div>';
+    });
 }
-
-function fmtHours(v) { return (v === '' || v === null || v === undefined) ? '—' : v + 'h'; }
 
 function renderTeam() {
   if (ACTIVE_TAB !== 'team') return;
@@ -463,21 +350,21 @@ function renderTeam() {
 function loadTeamRoster() {
   TEAM_ROSTER = null;
   renderTeam();
-  google.script.run.withSuccessHandler(function (r) { TEAM_ROSTER = r; renderTeam(); })
-    .withFailureHandler(function () { /* non-fatal — rest of the tab still shows */ })
-    .getTeamRoster(TEAM_ROSTER_OFFSET);
+  api({ action: 'getTeamRoster', email: CURRENT.email, weekOffset: TEAM_ROSTER_OFFSET })
+    .then(function (r) { TEAM_ROSTER = r; renderTeam(); })
+    .catch(function () { /* non-fatal — rest of the tab still shows */ });
 }
 
 function loadTeam() {
-  google.script.run.withSuccessHandler(function (t) { TEAM = t; renderTeam(); })
-    .withFailureHandler(function (err) {
+  api({ action: 'getTeamStatus', email: CURRENT.email })
+    .then(function (t) { TEAM = t; renderTeam(); })
+    .catch(function (err) {
       const body = document.getElementById('tabBody');
       if (body && ACTIVE_TAB === 'team') body.innerHTML = '<div class="card status err">' + err.message + '</div>';
-    })
-    .getTeamStatus();
-  google.script.run.withSuccessHandler(function (log) { RECENT_LOG = log; renderTeam(); })
-    .withFailureHandler(function () { /* non-fatal — Team Status card still shows */ })
-    .getRecentLog(30);
+    });
+  api({ action: 'getRecentLog', email: CURRENT.email, limit: 30 })
+    .then(function (log) { RECENT_LOG = log; renderTeam(); })
+    .catch(function () { /* non-fatal — Team Status card still shows */ });
   // Roster rarely changes within a session — fetch once per tab visit, not
   // on every 20s poll like the live status/log above. Nav clicks (loadTeamRoster)
   // fetch on demand separately.
@@ -485,6 +372,3 @@ function loadTeam() {
 }
 
 boot();
-</script>
-</body>
-</html>

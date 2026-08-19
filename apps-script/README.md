@@ -1,12 +1,17 @@
-# PFT Attendance — Apps Script version (recommended)
+# PFT Attendance — Apps Script backend
 
-Punch in/out + Lunch/Tea/Bio breaks + live Team Status, bound directly to the
-team's Google Sheet. No separate hosting, no Firebase project, no service
-account — identity and data access both come free from being an Apps Script
-project attached to the Sheet itself.
+Headless JSON API bound directly to the team's Google Sheet. It no longer
+serves any HTML — the frontend lives in [`../docs`](../docs) as a static
+site on GitHub Pages, which is the URL the team actually visits.
 
-This supersedes the Node/Railway/Firebase app in the repo root, which is
-parked for now after hitting deployment friction unrelated to the app code.
+This split exists to avoid Apps Script's own per-visitor OAuth consent
+screen: a Web App deployed as "Execute as: User accessing" makes every new
+visitor authorize the script individually (an "Unverified app" warning most
+people find alarming). Deployed instead as **"Execute as: Me" / "Anyone"**,
+this API needs no Google authorization at all to call — identity comes from
+Firebase Google Sign-In on the frontend (same pattern as the team's other
+dashboard, `wiom-l2`), and every request is checked server-side against a
+shared API key, the `@wiom.in` domain, and Employee Master.
 
 ## What it does
 
@@ -17,41 +22,56 @@ parked for now after hitting deployment friction unrelated to the app code.
 - **Roster-aware**: reads today's code for each employee straight from the
   Roster tab (read-only — this never writes to Roster). `WO` / `L` / `Holiday`
   days still leave Punch In available; `UP` = unpaid leave.
-- **Manager vs Advisor views**: anyone whose Employee Master **Designation**
-  contains "Team Leader" or "Manager" (case-insensitive) gets a **Team
-  Status** tab — live-polling (every 20s) status for everyone plus a Recent
-  Activity log of the last 30 punch/break events. Everyone else sees only
-  their own attendance, no tab bar. Enforced server-side, not just hidden in
-  the UI — `getTeamStatus`/`getRecentLog` reject non-managers outright.
-- Identity comes from `Session.getActiveUser().getEmail()` — the Google
-  account the visitor is actually signed into — never trusted from the client.
+- **Manager vs Advisor**: anyone whose Employee Master **Designation**
+  contains "Team Leader" or "Manager" (case-insensitive) can call the
+  manager-only actions (`getTeamStatus`, `getRecentLog`, `getTeamRoster`) —
+  enforced server-side, not just hidden in the UI.
+- Identity is the `email` param sent with every request (set by the frontend
+  from the signed-in Firebase user) — verified against `@wiom.in` and
+  Employee Master before anything is trusted.
+
+## API shape
+
+Every action is a `GET` to the deployed `/exec` URL (GET, not POST — Apps
+Script's redirect-on-execute can drop a POST body but keeps a GET's query
+string intact):
+
+```
+GET /exec?key=<API_KEY>&action=<actionName>&email=<caller>&...params
+```
+
+Actions: `getCurrentUser`, `checkLocation`, `getDayState`, `recordEvent`,
+`getTeamRoster`, `getMyMonthRoster`, `getTeamStatus`, `getRecentLog`. See the
+`ACTIONS` map in [`Code.gs`](Code.gs) for parameters and return shapes.
+Responses are always JSON; errors come back as `{ "error": "..." }` rather
+than an HTTP error status.
 
 ## Setup (~10 minutes)
 
 1. Open the Sheet → **Extensions → Apps Script**.
 2. Replace the default `Code.gs` content with [`Code.gs`](Code.gs) from this folder.
-3. **File → New → HTML**, name it exactly `Index` (becomes `Index.html`), paste in [`Index.html`](Index.html).
-4. Save. Run **initializeSheets** once from the function dropdown → grant the
+3. Save. Run **initializeSheets** once from the function dropdown → grant the
    permissions it asks for. Creates any missing tabs (Employee Master,
    Settings, Daily Attendance Log, Punch Events Log, Monthly Summary) with headers.
-5. In the **Settings** tab, fill in real Office Latitude/Longitude/Radius
+4. In the **Settings** tab, fill in real Office Latitude/Longitude/Radius
    (Google Maps → right-click your office → click the coordinates to copy).
-6. In **Employee Master**, make sure every active team member has their
+5. In **Employee Master**, make sure every active team member has their
    **Official Email** (@wiom.in), Shift Start, and Weekly Off Day filled in —
    this is how the app matches a Google sign-in to a person.
-7. **Deploy → New deployment → Web app.** Execute as **"User accessing the
-   web app"**; Who has access: **"Anyone within wiom.in"**. Deploy, authorize,
-   copy the URL.
-8. Test yourself first: open the URL on your phone, allow location, Punch In
-   → a break → Punch Out, confirm Daily Attendance Log updates, check Team
-   Status shows you.
-9. Share the URL with the team.
+6. **Deploy → New deployment → Web app.** Execute as **"Me"**; Who has
+   access: **"Anyone"**. Deploy, copy the `/exec` URL into
+   [`../docs/js/config.js`](../docs/js/config.js)'s `API_URL`.
+7. Turn on GitHub Pages for this repo (Settings → Pages → Source: Deploy
+   from branch → `main` → `/docs`), share that Pages URL with the team.
+8. Test yourself first: open the Pages URL, sign in with Google, allow
+   location, Punch In → a break → Punch Out, confirm Daily Attendance Log
+   updates.
 
 ## Updating later
 
-Edit `Code.gs` / `Index.html` here, commit to GitHub for history, then sync
-to the live project with [clasp](https://github.com/google/clasp) (Google's
-official CLI) instead of copy-pasting into the Apps Script editor:
+Edit `Code.gs` here, commit to GitHub for history, then sync to the live
+project with [clasp](https://github.com/google/clasp) (Google's official
+CLI) instead of copy-pasting into the Apps Script editor:
 
 ```bash
 cd apps-script
@@ -62,7 +82,9 @@ npx @google/clasp deploy --deploymentId AKfycbz1HM_Ud45vJh_6LjWkwKHOore8igJIj95k
 `push` alone only updates the editor's HEAD copy — the live `/exec` URL is
 pinned to a specific deployment *version*, so the `deploy` step (targeting
 the deployment ID above, which is the one behind the current live URL) is
-what actually makes a change visible without changing the URL.
+what actually makes a change visible without changing the URL. Frontend
+changes (`../docs`) just need a normal `git push` — GitHub Pages redeploys
+automatically.
 
 One-time setup this required (already done for this project, documented in
 case it needs redoing): enable the "Google Apps Script API" toggle at
@@ -82,13 +104,13 @@ extracted and run against known cases in a sandboxed Node context:
 node apps-script/test.js
 ```
 
-Run this after editing `Code.gs`, before pasting the update into the Apps
-Script editor.
+Run this after editing `Code.gs`, before pushing.
 
 ## Tuning
 
 - Half-day threshold (net hours < 4) and late grace (Settings tab, default
   15 min) live in `updateDailySummary_` / the sheet.
-- Team Status poll interval: `teamPollHandle` in `Index.html` (default 20s).
+- Team Status poll interval: `teamPollHandle` in `../docs/js/app.js` (default 20s).
 - Roster block format (2-row header, date columns from column K) is parsed
   in `rosterCodeFromGrid_` / `findTodayColumn_` / `findEmployeeRow_` in `Code.gs`.
+- API key / Firebase config: `../docs/js/config.js`.
