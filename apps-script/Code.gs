@@ -290,15 +290,24 @@ function dateRangeInfo_(startDate, numDays) {
   return out;
 }
 
-// Manager-only: the current Mon-Sun week's Roster codes for every active
-// employee, for the grid at the top of Team Status.
-function getTeamRoster() {
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatRangeLabel_(days) {
+  const first = days[0].date, last = days[days.length - 1].date;
+  return first.getDate() + ' ' + MONTH_ABBR[first.getMonth()] + ' – ' + last.getDate() + ' ' + MONTH_ABBR[last.getMonth()] + ' ' + last.getFullYear();
+}
+
+// Manager-only: one Mon-Sun week's Roster codes for every active employee,
+// for the navigable grid at the top of Team Status. weekOffset: 0 = the
+// week containing today, -1 = previous week, +1 = next week, etc.
+function getTeamRoster(weekOffset) {
   requireManager_();
+  const offset = weekOffset || 0;
   const grid = getRosterGrid_();
   const employees = listActiveEmployees_();
   const today = new Date();
   const dow = today.getDay();
-  const mondayOffset = dow === 0 ? -6 : 1 - dow;
+  const mondayOffset = (dow === 0 ? -6 : 1 - dow) + offset * 7;
   const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + mondayOffset);
   const days = dateRangeInfo_(monday, 7);
   const todayKey = formatDdMmmYyyy_(today);
@@ -311,7 +320,10 @@ function getTeamRoster() {
   });
 
   return {
-    days: days.map(function (d) { return { day: d.day, weekday: d.weekday, isToday: d.key === todayKey }; }),
+    rangeLabel: formatRangeLabel_(days),
+    days: days.map(function (d) {
+      return { label: d.weekday + ' ' + d.day + '/' + (d.date.getMonth() + 1), isToday: d.key === todayKey };
+    }),
     rows: rows
   };
 }
@@ -576,14 +588,14 @@ function getTeamStatus() {
         empId: e.empId, name: e.name, department: e.department,
         punchIn: row[4] instanceof Date ? row[4].toISOString() : (row[4] || null),
         punchOut: row[5] instanceof Date ? row[5].toISOString() : (row[5] || null),
-        lunch: row[6] || 0, tea: row[7] || 0, bio: row[8] || 0,
+        lunch: row[6] || 0, tea: row[7] || 0, bio: row[8] || 0, totalBreak: row[9] || 0, gross: row[10] || '',
         netHours: row[11] || '', lateBy: row[12] || 0, status: row[13] || '', statusSince: since
       };
     }
     const rosterCode = rosterCodeFromGrid_(rosterGrid, e.name, now, e.weeklyOff);
     return {
       empId: e.empId, name: e.name, department: e.department,
-      punchIn: null, punchOut: null, lunch: 0, tea: 0, bio: 0,
+      punchIn: null, punchOut: null, lunch: 0, tea: 0, bio: 0, totalBreak: 0, gross: '',
       netHours: '', lateBy: 0, status: rosterCode || 'Not Started', statusSince: since
     };
   });

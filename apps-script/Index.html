@@ -30,7 +30,8 @@
     .role-pill.manager{color:var(--brand);border-color:var(--brand);background:var(--brand-dim);}
     .role-pill.advisor{color:var(--blue);border-color:var(--blue);background:var(--blue-bg);}
 
-    .wrap{position:relative;z-index:1;max-width:480px;margin:0 auto;padding:20px 16px 40px;min-height:100vh;}
+    .wrap{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:20px 16px 40px;min-height:100vh;}
+    .narrow{max-width:480px;margin:0 auto;}
     .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 6px 20px rgba(0,0,0,.28);}
     h1{font-size:19px;margin:0 0 4px;color:var(--text);}
     .section-title{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin:0 0 14px;}
@@ -115,6 +116,25 @@
     .rc-WFH,.rc-L{background:var(--blue-bg);color:#7ab1f2;border-color:rgba(57,135,229,.4);}
     .rc-WO,.rc-Holiday,.rc-empty{background:var(--grey-bg);color:var(--text-secondary);border-color:var(--border-strong);}
     .rc-HD{background:var(--amber-bg);color:var(--amber);border-color:rgba(250,178,25,.4);}
+
+    .roster-nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;}
+    .roster-nav-btn{width:auto;display:inline-flex;align-items:center;gap:4px;padding:8px 14px;font-size:12px;font-weight:700;text-transform:none;letter-spacing:0;background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text-secondary);border-radius:9px;margin-top:0;cursor:pointer;}
+    .roster-nav-btn:hover{color:var(--text);border-color:var(--brand);}
+    .roster-range{font-weight:800;font-size:14px;color:var(--text);}
+    .roster-nav-right{display:flex;gap:8px;}
+
+    .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border);}
+    .legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);}
+
+    .section-heading{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin:28px 0 12px;padding-top:4px;}
+
+    .data-table-wrap{overflow-x:auto;}
+    .data-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+    .data-table th{text-align:left;padding:9px 12px;color:var(--text-muted);font-weight:700;text-transform:uppercase;font-size:10.5px;letter-spacing:.4px;border-bottom:1px solid var(--border-strong);white-space:nowrap;}
+    .data-table td{padding:10px 12px;border-bottom:1px solid var(--border);white-space:nowrap;}
+    .data-table tr:last-child td{border-bottom:none;}
+    .data-table td.dt-name{font-weight:700;color:var(--text);}
+    .data-table tr:hover td{background:var(--surface-2);}
   </style>
 </head>
 <body>
@@ -140,6 +160,7 @@ let STATE = { phase: 'not_started', breakType: null, punchIn: null, punchOut: nu
 let ACTIVE_TAB = 'me';
 let TEAM = null;
 let TEAM_ROSTER = null;
+let TEAM_ROSTER_OFFSET = 0;
 let MY_ROSTER = null;
 let RECENT_LOG = null;
 let teamPollHandle = null;
@@ -171,7 +192,7 @@ function renderMonthRosterTable(days) {
 // Multi-employee weekly grid (Team Status): one row per advisor, one column per day.
 function renderTeamRosterTable(roster) {
   let html = '<div class="roster-scroll"><table class="roster-table"><thead><tr><th class="name-col">Advisor</th>';
-  roster.days.forEach(function (d) { html += '<th class="' + (d.isToday ? 'today' : '') + '">' + d.weekday + '<br>' + d.day + '</th>'; });
+  roster.days.forEach(function (d) { html += '<th class="' + (d.isToday ? 'today' : '') + '">' + d.label + '</th>'; });
   html += '</tr></thead><tbody>';
   roster.rows.forEach(function (r) {
     html += '<tr><td class="name-col">' + r.name + '</td>';
@@ -181,6 +202,12 @@ function renderTeamRosterTable(roster) {
     html += '</tr>';
   });
   html += '</tbody></table></div>';
+
+  html += '<div class="legend">';
+  [['P', 'Present'], ['WFH', 'Work From Home'], ['WO', 'Week Off'], ['L', 'Leave'], ['UP', 'Unpaid Leave'], ['HD', 'Half Day'], ['Holiday', 'Holiday']].forEach(function (item) {
+    html += '<div class="legend-item"><span class="rc ' + rosterCodeClass(item[0]) + '">' + item[0] + '</span>' + item[1] + '</div>';
+  });
+  html += '</div>';
   return html;
 }
 
@@ -207,7 +234,7 @@ function onUser(res) {
   renderShell();
   refreshDayState();
   requestLocation();
-  loadMyRoster();
+  if (!IS_MANAGER) loadMyRoster(); // managers have no Roster row — nothing to fetch
   setInterval(function () { const el = document.getElementById('clock'); if (el) el.textContent = new Date().toLocaleTimeString(); }, 1000);
 }
 
@@ -252,7 +279,7 @@ function renderShell() {
     return;
   }
   document.getElementById('app').innerHTML =
-    '<div class="tabs"><div class="tab" id="tabMe">My Attendance</div><div class="tab" id="tabTeam">Team Status</div></div><div id="tabBody"></div>';
+    '<div class="narrow tabs"><div class="tab" id="tabMe">My Attendance</div><div class="tab" id="tabTeam">Team Status</div></div><div id="tabBody"></div>';
   document.getElementById('tabMe').addEventListener('click', function () { switchTab('me'); });
   document.getElementById('tabTeam').addEventListener('click', function () { switchTab('team'); });
   switchTab('me');
@@ -279,7 +306,8 @@ function renderMe() {
   const body = document.getElementById('tabBody');
   if (!body) return;
 
-  let html = '<div class="card"><h1>' + EMP.name + '</h1><div class="sub">' + EMP.email + ' &middot; ' + (EMP.empId || '') + '</div>';
+  let html = '<div class="narrow">';
+  html += '<div class="card"><h1>' + EMP.name + '</h1><div class="sub">' + EMP.email + ' &middot; ' + (EMP.empId || '') + '</div>';
   html += '<div id="clock" class="clock">' + new Date().toLocaleTimeString() + '</div>';
   html += '<div class="row"><span class="label">Date</span><span>' + new Date().toLocaleDateString() + '</span></div>';
 
@@ -296,9 +324,13 @@ function renderMe() {
   }
   html += '<a href="#" class="refresh" id="refreshLoc">Refresh location</a></div>';
 
-  html += '<div class="card"><h1>' + (MY_ROSTER ? MY_ROSTER.month : 'This Month') + ' Roster</h1>';
-  html += MY_ROSTER ? renderMonthRosterTable(MY_ROSTER.days) : '<div class="loading">Loading…</div>';
-  html += '</div>';
+  if (!IS_MANAGER) {
+    // Only advisors have rows in Roster — managers/TLs don't, so this would
+    // just render blank for them.
+    html += '<div class="card"><h1>' + (MY_ROSTER ? MY_ROSTER.month : 'This Month') + ' Roster</h1>';
+    html += MY_ROSTER ? renderMonthRosterTable(MY_ROSTER.days) : '<div class="loading">Loading…</div>';
+    html += '</div>';
+  }
 
   const phaseText = {
     not_started: STATE.rosterCode ? 'Not punched in &middot; Roster: ' + STATE.rosterCode : 'Not punched in',
@@ -339,6 +371,7 @@ function renderMe() {
     html += '<div class="status err">You must be within office range to punch in/out or take a break.</div>';
   }
   html += '<div id="msg"></div></div>';
+  html += '</div>';
 
   body.innerHTML = html;
   document.getElementById('refreshLoc').addEventListener('click', function (e) { e.preventDefault(); LOC_INFO = null; renderMe(); requestLocation(); });
@@ -368,15 +401,25 @@ function onAction(type, btn) {
   }).recordEvent(type, LAST_LOC ? LAST_LOC.lat : null, LAST_LOC ? LAST_LOC.lng : null);
 }
 
+function fmtHours(v) { return (v === '' || v === null || v === undefined) ? '—' : v + 'h'; }
+
 function renderTeam() {
   if (ACTIVE_TAB !== 'team') return;
   const body = document.getElementById('tabBody');
   if (!body) return;
 
-  let html = '<div class="card"><h1>This Week’s Roster</h1><div class="sub">Mon–Sun &middot; read-only, set in the Roster tab</div>';
+  // 1. Team roster grid — full width, navigable by week.
+  let html = '<div class="card"><h1>Team Roster</h1>';
+  html += '<div class="roster-nav">';
+  html += '<button class="roster-nav-btn" id="rosterPrev">‹ Prev</button>';
+  html += '<div class="roster-range">' + (TEAM_ROSTER ? TEAM_ROSTER.rangeLabel : 'Loading…') + '</div>';
+  html += '<div class="roster-nav-right"><button class="roster-nav-btn" id="rosterToday">Today</button><button class="roster-nav-btn" id="rosterNext">Next ›</button></div>';
+  html += '</div>';
   html += TEAM_ROSTER ? renderTeamRosterTable(TEAM_ROSTER) : '<div class="loading">Loading…</div>';
   html += '</div>';
 
+  // 2. Day summary heading + live status.
+  html += '<div class="section-heading">Today’s Summary</div>';
   html += '<div class="card"><h1><span class="live-dot"></span>Team Status</h1>';
   if (!TEAM) {
     html += '<div class="loading">Loading…</div>';
@@ -392,6 +435,23 @@ function renderTeam() {
   }
   html += '</div>';
 
+  // 3. Day End Report — login/logout, total login time, active/working time, break time.
+  html += '<div class="card"><h1>Day End Report</h1><div class="sub">Today &middot; ' + new Date().toLocaleDateString() + '</div>';
+  if (!TEAM) {
+    html += '<div class="loading">Loading…</div>';
+  } else {
+    html += '<div class="data-table-wrap"><table class="data-table"><thead><tr>' +
+      '<th>Advisor</th><th>Login Time</th><th>Logout Time</th><th>Total Login Time</th><th>Active/Working Time</th><th>Total Break Time</th>' +
+      '</tr></thead><tbody>';
+    TEAM.employees.forEach(function (e) {
+      html += '<tr><td class="dt-name">' + e.name + '</td><td>' + fmtTime(e.punchIn) + '</td><td>' + fmtTime(e.punchOut) + '</td>' +
+        '<td>' + fmtHours(e.gross) + '</td><td>' + fmtHours(e.netHours) + '</td><td>' + Math.round(e.totalBreak || 0) + ' min</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  html += '</div>';
+
+  // 4. Recent activity.
   html += '<div class="card"><h1>Recent Activity</h1><div class="sub">Last ' + (RECENT_LOG ? RECENT_LOG.length : 0) + ' punch/break events</div>';
   if (!RECENT_LOG) {
     html += '<div class="loading">Loading…</div>';
@@ -406,6 +466,20 @@ function renderTeam() {
   html += '</div>';
 
   body.innerHTML = html;
+  const prevBtn = document.getElementById('rosterPrev');
+  const nextBtn = document.getElementById('rosterNext');
+  const todayBtn = document.getElementById('rosterToday');
+  if (prevBtn) prevBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET -= 1; loadTeamRoster(); });
+  if (nextBtn) nextBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET += 1; loadTeamRoster(); });
+  if (todayBtn) todayBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET = 0; loadTeamRoster(); });
+}
+
+function loadTeamRoster() {
+  TEAM_ROSTER = null;
+  renderTeam();
+  google.script.run.withSuccessHandler(function (r) { TEAM_ROSTER = r; renderTeam(); })
+    .withFailureHandler(function () { /* non-fatal — rest of the tab still shows */ })
+    .getTeamRoster(TEAM_ROSTER_OFFSET);
 }
 
 function loadTeam() {
@@ -419,12 +493,9 @@ function loadTeam() {
     .withFailureHandler(function () { /* non-fatal — Team Status card still shows */ })
     .getRecentLog(30);
   // Roster rarely changes within a session — fetch once per tab visit, not
-  // on every 20s poll like the live status/log above.
-  if (!TEAM_ROSTER) {
-    google.script.run.withSuccessHandler(function (r) { TEAM_ROSTER = r; renderTeam(); })
-      .withFailureHandler(function () { /* non-fatal — rest of the tab still shows */ })
-      .getTeamRoster();
-  }
+  // on every 20s poll like the live status/log above. Nav clicks (loadTeamRoster)
+  // fetch on demand separately.
+  if (!TEAM_ROSTER) loadTeamRoster();
 }
 
 boot();

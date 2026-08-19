@@ -114,4 +114,9 @@ t('rosterCodeForDate_ returns empty string for a date not present anywhere in th
   assertEq(sandbox.rosterCodeForDate_(grid, 'Dhananjay', '15/Aug/2026'), '');
 });
 
+t('formatRangeLabel_ matches "17 Aug – 23 Aug 2026" style', () => {
+  const days = sandbox.dateRangeInfo_(new Date(2026, 7, 17), 7);
+  assertEq(sandbox.formatRangeLabel_(days), '17 Aug – 23 Aug 2026');
+});
+
 console.log('done');
