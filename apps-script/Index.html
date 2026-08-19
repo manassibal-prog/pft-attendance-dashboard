@@ -102,6 +102,19 @@
 
     .event-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;}
     .ed-in,.ed-end{background:var(--green);} .ed-out{background:var(--red);} .ed-start{background:var(--amber);}
+
+    .roster-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+    .roster-table{border-collapse:separate;border-spacing:0 4px;width:100%;font-size:11px;}
+    .roster-table th{padding:4px 6px;text-align:center;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;line-height:1.5;}
+    .roster-table th.name-col,.roster-table td.name-col{text-align:left;position:sticky;left:0;background:var(--surface);padding-right:12px;}
+    .roster-table th.today,.roster-table td.today{background:var(--brand-dim);border-radius:8px;}
+    .roster-table td{padding:5px 4px;text-align:center;white-space:nowrap;}
+    .roster-table td.name-col{font-weight:700;color:var(--text);font-size:12px;}
+    .rc{display:inline-block;min-width:30px;padding:3px 5px;border-radius:6px;font-size:10px;font-weight:800;border:1px solid;}
+    .rc-P{background:var(--green-bg);color:#3ddc6f;border-color:rgba(12,163,12,.4);}
+    .rc-WFH,.rc-L{background:var(--blue-bg);color:#7ab1f2;border-color:rgba(57,135,229,.4);}
+    .rc-WO,.rc-Holiday,.rc-empty{background:var(--grey-bg);color:var(--text-secondary);border-color:var(--border-strong);}
+    .rc-HD{background:var(--amber-bg);color:var(--amber);border-color:rgba(250,178,25,.4);}
   </style>
 </head>
 <body>
@@ -126,11 +139,50 @@ let LOC_INFO = null;
 let STATE = { phase: 'not_started', breakType: null, punchIn: null, punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, rosterCode: '', requiresGeofence: true };
 let ACTIVE_TAB = 'me';
 let TEAM = null;
+let TEAM_ROSTER = null;
+let MY_ROSTER = null;
 let RECENT_LOG = null;
 let teamPollHandle = null;
 
 const BREAK_LABEL = { LUNCH: 'Lunch Break', TEA: 'Tea Break', BIO: 'Bio Break' };
 const EVENT_DOT = { PUNCH_IN: 'ed-in', PUNCH_OUT: 'ed-out', LUNCH_START: 'ed-start', TEA_START: 'ed-start', BIO_START: 'ed-start', LUNCH_END: 'ed-end', TEA_END: 'ed-end', BIO_END: 'ed-end' };
+const LIVE_STATUSES = ['Working', 'Lunch Break', 'Tea Break', 'Bio Break'];
+
+function rosterCodeClass(code) {
+  const c = String(code || '').trim();
+  if (c === 'P') return 'rc-P';
+  if (c === 'WFH') return 'rc-WFH';
+  if (c === 'L' || c === 'UP') return 'rc-L';
+  if (c === 'HD') return 'rc-HD';
+  if (c === 'WO' || c === 'Holiday' || !c || c === '—') return 'rc-WO';
+  return 'rc-empty';
+}
+
+// Single-row strip for one employee's month (My Attendance).
+function renderMonthRosterTable(days) {
+  let html = '<div class="roster-scroll" id="monthRosterScroll"><table class="roster-table"><thead><tr>';
+  days.forEach(function (d) { html += '<th class="' + (d.isToday ? 'today' : '') + '">' + d.weekday + '<br>' + d.day + '</th>'; });
+  html += '</tr></thead><tbody><tr>';
+  days.forEach(function (d) { html += '<td class="' + (d.isToday ? 'today' : '') + '"><span class="rc ' + rosterCodeClass(d.code) + '">' + d.code + '</span></td>'; });
+  html += '</tr></tbody></table></div>';
+  return html;
+}
+
+// Multi-employee weekly grid (Team Status): one row per advisor, one column per day.
+function renderTeamRosterTable(roster) {
+  let html = '<div class="roster-scroll"><table class="roster-table"><thead><tr><th class="name-col">Advisor</th>';
+  roster.days.forEach(function (d) { html += '<th class="' + (d.isToday ? 'today' : '') + '">' + d.weekday + '<br>' + d.day + '</th>'; });
+  html += '</tr></thead><tbody>';
+  roster.rows.forEach(function (r) {
+    html += '<tr><td class="name-col">' + r.name + '</td>';
+    r.codes.forEach(function (code, i) {
+      html += '<td class="' + (roster.days[i].isToday ? 'today' : '') + '"><span class="rc ' + rosterCodeClass(code) + '">' + code + '</span></td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
 
 function boot() {
   google.script.run.withSuccessHandler(onUser).withFailureHandler(onFatal).getCurrentUser();
@@ -155,11 +207,22 @@ function onUser(res) {
   renderShell();
   refreshDayState();
   requestLocation();
+  loadMyRoster();
   setInterval(function () { const el = document.getElementById('clock'); if (el) el.textContent = new Date().toLocaleTimeString(); }, 1000);
 }
 
 function refreshDayState() {
   google.script.run.withSuccessHandler(function (s) { STATE = s; renderMe(); }).getDayState();
+}
+
+function loadMyRoster() {
+  google.script.run.withSuccessHandler(function (r) {
+    MY_ROSTER = r;
+    renderMe();
+    const scrollEl = document.getElementById('monthRosterScroll');
+    const todayCell = scrollEl && scrollEl.querySelector('.today');
+    if (todayCell) todayCell.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }).withFailureHandler(function () { /* non-fatal — rest of the page still works */ }).getMyMonthRoster();
 }
 
 function requestLocation() {
@@ -233,6 +296,10 @@ function renderMe() {
   }
   html += '<a href="#" class="refresh" id="refreshLoc">Refresh location</a></div>';
 
+  html += '<div class="card"><h1>' + (MY_ROSTER ? MY_ROSTER.month : 'This Month') + ' Roster</h1>';
+  html += MY_ROSTER ? renderMonthRosterTable(MY_ROSTER.days) : '<div class="loading">Loading…</div>';
+  html += '</div>';
+
   const phaseText = {
     not_started: STATE.rosterCode ? 'Not punched in &middot; Roster: ' + STATE.rosterCode : 'Not punched in',
     working: 'Working',
@@ -305,17 +372,24 @@ function renderTeam() {
   if (ACTIVE_TAB !== 'team') return;
   const body = document.getElementById('tabBody');
   if (!body) return;
+
+  let html = '<div class="card"><h1>This Week’s Roster</h1><div class="sub">Mon–Sun &middot; read-only, set in the Roster tab</div>';
+  html += TEAM_ROSTER ? renderTeamRosterTable(TEAM_ROSTER) : '<div class="loading">Loading…</div>';
+  html += '</div>';
+
+  html += '<div class="card"><h1><span class="live-dot"></span>Team Status</h1>';
   if (!TEAM) {
-    body.innerHTML = '<div class="loading">Loading team status…</div>';
-    return;
+    html += '<div class="loading">Loading…</div>';
+  } else {
+    html += '<div class="sub">Live &middot; updates every 20s &middot; as of ' + new Date(TEAM.asOf).toLocaleTimeString() + '</div>';
+    TEAM.employees.forEach(function (e) {
+      const cls = 'st-' + String(e.status || '').replace(/\s+/g, '');
+      const since = (LIVE_STATUSES.indexOf(e.status) > -1 && e.statusSince) ? ' &middot; since ' + fmtTime(e.statusSince) : '';
+      html += '<div class="team-row"><div><div class="team-name">' + e.name + '</div><div class="team-sub">' + (e.department || '') +
+        (e.punchIn ? ' &middot; in ' + fmtTime(e.punchIn) : '') + (e.punchOut ? ' &middot; out ' + fmtTime(e.punchOut) : '') + since + '</div></div>' +
+        '<span class="status-pill ' + cls + '">' + (e.status || '—') + '</span></div>';
+    });
   }
-  let html = '<div class="card"><h1><span class="live-dot"></span>Team Status</h1><div class="sub">Live &middot; updates every 20s &middot; as of ' + new Date(TEAM.asOf).toLocaleTimeString() + '</div>';
-  TEAM.employees.forEach(function (e) {
-    const cls = 'st-' + String(e.status || '').replace(/\s+/g, '');
-    html += '<div class="team-row"><div><div class="team-name">' + e.name + '</div><div class="team-sub">' + (e.department || '') +
-      (e.punchIn ? ' &middot; in ' + fmtTime(e.punchIn) : '') + (e.punchOut ? ' &middot; out ' + fmtTime(e.punchOut) : '') + '</div></div>' +
-      '<span class="status-pill ' + cls + '">' + (e.status || '—') + '</span></div>';
-  });
   html += '</div>';
 
   html += '<div class="card"><h1>Recent Activity</h1><div class="sub">Last ' + (RECENT_LOG ? RECENT_LOG.length : 0) + ' punch/break events</div>';
@@ -344,6 +418,13 @@ function loadTeam() {
   google.script.run.withSuccessHandler(function (log) { RECENT_LOG = log; renderTeam(); })
     .withFailureHandler(function () { /* non-fatal — Team Status card still shows */ })
     .getRecentLog(30);
+  // Roster rarely changes within a session — fetch once per tab visit, not
+  // on every 20s poll like the live status/log above.
+  if (!TEAM_ROSTER) {
+    google.script.run.withSuccessHandler(function (r) { TEAM_ROSTER = r; renderTeam(); })
+      .withFailureHandler(function () { /* non-fatal — rest of the tab still shows */ })
+      .getTeamRoster();
+  }
 }
 
 boot();

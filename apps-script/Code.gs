@@ -267,6 +267,75 @@ function getTodayRosterCodeFor_(employeeName, now, weeklyOffFallback) {
   return rosterCodeFromGrid_(getRosterGrid_(), employeeName, now, weeklyOffFallback);
 }
 
+// Looks up one employee's code for an arbitrary date (not just today) — same
+// block-scan as rosterCodeFromGrid_, generalized for the weekly/monthly grid
+// views below.
+function rosterCodeForDate_(grid, employeeName, dateStr) {
+  const found = findTodayColumn_(grid, dateStr);
+  if (!found) return '';
+  const empRow = findEmployeeRow_(grid, found.headerRow, employeeName);
+  if (empRow === null) return '';
+  const code = grid[empRow][found.col];
+  return code ? String(code).trim() : '';
+}
+
+const WEEKDAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function dateRangeInfo_(startDate, numDays) {
+  const out = [];
+  for (let i = 0; i < numDays; i++) {
+    const d = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
+    out.push({ date: d, key: formatDdMmmYyyy_(d), day: d.getDate(), weekday: WEEKDAY_ABBR[d.getDay()] });
+  }
+  return out;
+}
+
+// Manager-only: the current Mon-Sun week's Roster codes for every active
+// employee, for the grid at the top of Team Status.
+function getTeamRoster() {
+  requireManager_();
+  const grid = getRosterGrid_();
+  const employees = listActiveEmployees_();
+  const today = new Date();
+  const dow = today.getDay();
+  const mondayOffset = dow === 0 ? -6 : 1 - dow;
+  const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + mondayOffset);
+  const days = dateRangeInfo_(monday, 7);
+  const todayKey = formatDdMmmYyyy_(today);
+
+  const rows = employees.map(function (e) {
+    return {
+      empId: e.empId, name: e.name,
+      codes: days.map(function (d) { return rosterCodeForDate_(grid, e.name, d.key) || '—'; })
+    };
+  });
+
+  return {
+    days: days.map(function (d) { return { day: d.day, weekday: d.weekday, isToday: d.key === todayKey }; }),
+    rows: rows
+  };
+}
+
+// Any signed-in employee: their own Roster codes for the current calendar
+// month, for the strip at the top of My Attendance.
+function getMyMonthRoster() {
+  const res = currentEmployee_();
+  if (res.error) throw new Error(res.error);
+  const grid = getRosterGrid_();
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const first = new Date(now.getFullYear(), now.getMonth(), 1);
+  const days = dateRangeInfo_(first, daysInMonth);
+  const todayKey = formatDdMmmYyyy_(now);
+
+  return {
+    month: Utilities.formatDate(now, Session.getScriptTimeZone(), 'MMMM yyyy'),
+    days: days.map(function (d) {
+      return { day: d.day, weekday: d.weekday, code: rosterCodeForDate_(grid, res.emp.name, d.key) || '—', isToday: d.key === todayKey };
+    })
+  };
+}
+
 // ---------- Day-state engine ----------
 // Replays today's successful events into: not_started -> working -> on_break -> working -> ... -> completed
 function computeDayState_(events) {
@@ -481,10 +550,26 @@ function getTeamStatus() {
     }
   }
 
+  // Last successful event timestamp per employee today — i.e. when their
+  // CURRENT status began (break start, punch-in, punch-out), not just the
+  // day's punch in/out times. One read of the whole log, not per-employee.
+  const eventsSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
+  const eventsData = eventsSh.getDataRange().getValues();
+  const lastEventAt = {};
+  for (let i = 1; i < eventsData.length; i++) {
+    const r = eventsData[i];
+    if (!r[0] || r[9] !== 'Success') continue;
+    const ts = new Date(r[0]);
+    if (Utilities.formatDate(ts, tz, 'yyyy-MM-dd') !== todayStr) continue;
+    const empId = String(r[1]);
+    if (!lastEventAt[empId] || ts > lastEventAt[empId]) lastEventAt[empId] = ts;
+  }
+
   const employees = listActiveEmployees_();
   const rosterGrid = getRosterGrid_();
 
   const results = employees.map(function (e) {
+    const since = lastEventAt[e.empId] ? lastEventAt[e.empId].toISOString() : null;
     const row = todayRows[e.empId];
     if (row) {
       return {
@@ -492,14 +577,14 @@ function getTeamStatus() {
         punchIn: row[4] instanceof Date ? row[4].toISOString() : (row[4] || null),
         punchOut: row[5] instanceof Date ? row[5].toISOString() : (row[5] || null),
         lunch: row[6] || 0, tea: row[7] || 0, bio: row[8] || 0,
-        netHours: row[11] || '', lateBy: row[12] || 0, status: row[13] || ''
+        netHours: row[11] || '', lateBy: row[12] || 0, status: row[13] || '', statusSince: since
       };
     }
     const rosterCode = rosterCodeFromGrid_(rosterGrid, e.name, now, e.weeklyOff);
     return {
       empId: e.empId, name: e.name, department: e.department,
       punchIn: null, punchOut: null, lunch: 0, tea: 0, bio: 0,
-      netHours: '', lateBy: 0, status: rosterCode || 'Not Started'
+      netHours: '', lateBy: 0, status: rosterCode || 'Not Started', statusSince: since
     };
   });
 

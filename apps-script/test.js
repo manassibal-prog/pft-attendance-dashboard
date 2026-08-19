@@ -93,4 +93,25 @@ t('roster: blank cell falls back to weekly-off-day match', () => {
   assertEq(sandbox.rosterCodeFromGrid_(grid, 'Dhananjay', new Date(2026, 7, 19), 'Sunday'), '');
 });
 
+// ---- weekly/monthly range helpers (Team Status roster grid, My Attendance month strip) ----
+t('dateRangeInfo_ generates the right number of consecutive days with correct weekday labels', () => {
+  const days = sandbox.dateRangeInfo_(new Date(2026, 7, 31), 3); // Aug 31 (Mon) -> Sep 2
+  assertEq(days.length, 3);
+  assertEq(days[0].key, '31/Aug/2026');
+  assertEq(days[0].weekday, 'Mon');
+  assertEq(days[1].key, '01/Sep/2026');
+  assertEq(days[2].key, '02/Sep/2026');
+});
+
+t('rosterCodeForDate_ resolves dates that fall in different monthly blocks within the same requested range', () => {
+  // Aug 19 lives in the Aug block, Sep 2 lives in the Sep block — a week
+  // spanning the boundary must look each date up in its own block.
+  assertEq(sandbox.rosterCodeForDate_(grid, 'Dhananjay', '18/Aug/2026'), 'WFH');
+  assertEq(sandbox.rosterCodeForDate_(grid, 'Dhananjay', '02/Sep/2026'), 'L');
+});
+
+t('rosterCodeForDate_ returns empty string for a date not present anywhere in the grid', () => {
+  assertEq(sandbox.rosterCodeForDate_(grid, 'Dhananjay', '15/Aug/2026'), '');
+});
+
 console.log('done');
