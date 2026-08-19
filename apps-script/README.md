@@ -17,9 +17,12 @@ parked for now after hitting deployment friction unrelated to the app code.
 - **Roster-aware**: reads today's code for each employee straight from the
   Roster tab (read-only — this never writes to Roster). `WO` / `L` / `Holiday`
   days still leave Punch In available; `UP` = unpaid leave.
-- **Team Status tab**: live-polling (every 20s) view of everyone's current
-  state — punched in, on a break, or their Roster status if they haven't
-  started yet.
+- **Manager vs Advisor views**: anyone whose Employee Master **Designation**
+  contains "Team Leader" or "Manager" (case-insensitive) gets a **Team
+  Status** tab — live-polling (every 20s) status for everyone plus a Recent
+  Activity log of the last 30 punch/break events. Everyone else sees only
+  their own attendance, no tab bar. Enforced server-side, not just hidden in
+  the UI — `getTeamStatus`/`getRecentLog` reject non-managers outright.
 - Identity comes from `Session.getActiveUser().getEmail()` — the Google
   account the visitor is actually signed into — never trusted from the client.
 
