@@ -11,7 +11,6 @@ let ACTIVE_TAB = 'me';
 let TEAM = null;
 let TEAM_ROSTER = null;
 let TEAM_ROSTER_OFFSET = 0;
-let MY_ROSTER = null;
 let RECENT_LOG = null;
 let teamPollHandle = null;
 
@@ -29,15 +28,9 @@ function rosterCodeClass(code) {
   return 'rc-empty';
 }
 
-function renderMonthRosterTable(days) {
-  let html = '<div class="roster-scroll" id="monthRosterScroll"><table class="roster-table"><thead><tr>';
-  days.forEach(function (d) { html += '<th class="' + (d.isToday ? 'today' : '') + '">' + d.weekday + '<br>' + d.day + '</th>'; });
-  html += '</tr></thead><tbody><tr>';
-  days.forEach(function (d) { html += '<td class="' + (d.isToday ? 'today' : '') + '"><span class="rc ' + rosterCodeClass(d.code) + '">' + d.code + '</span></td>'; });
-  html += '</tr></tbody></table></div>';
-  return html;
-}
-
+// Multi-employee weekly grid: one row per advisor, one column per day.
+// Shared by both roles — advisors see the whole team's roster here too,
+// same as managers (Roster itself stays read-only from this app either way).
 function renderTeamRosterTable(roster) {
   let html = '<div class="roster-scroll"><table class="roster-table"><thead><tr><th class="name-col">Advisor</th>';
   roster.days.forEach(function (d) { html += '<th class="' + (d.isToday ? 'today' : '') + '">' + d.label + '</th>'; });
@@ -61,6 +54,30 @@ function renderTeamRosterTable(roster) {
 
 function fmtTime(v) { return v ? new Date(v).toLocaleTimeString() : '—'; }
 function fmtHours(v) { return (v === '' || v === null || v === undefined) ? '—' : v + 'h'; }
+
+// Shared by both roles — full-width card, navigable by week (Prev/Next/Today).
+function renderRosterCard() {
+  let html = '<div class="card"><h1>Team Roster</h1>';
+  html += '<div class="roster-nav">';
+  html += '<button class="roster-nav-btn" id="rosterPrev">‹ Prev</button>';
+  html += '<div class="roster-range">' + (TEAM_ROSTER ? TEAM_ROSTER.rangeLabel : 'Loading…') + '</div>';
+  html += '<div class="roster-nav-right"><button class="roster-nav-btn" id="rosterToday">Today</button><button class="roster-nav-btn" id="rosterNext">Next ›</button></div>';
+  html += '</div>';
+  html += TEAM_ROSTER ? renderTeamRosterTable(TEAM_ROSTER) : '<div class="loading">Loading…</div>';
+  html += '</div>';
+  return html;
+}
+
+function wireRosterNav() {
+  const prevBtn = document.getElementById('rosterPrev');
+  const nextBtn = document.getElementById('rosterNext');
+  const todayBtn = document.getElementById('rosterToday');
+  if (prevBtn) prevBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET -= 1; loadTeamRoster(); });
+  if (nextBtn) nextBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET += 1; loadTeamRoster(); });
+  if (todayBtn) todayBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET = 0; loadTeamRoster(); });
+}
+
+function renderActive() { if (ACTIVE_TAB === 'team') renderTeam(); else renderMe(); }
 
 // ---------- Sign-in screen ----------
 function renderSignIn(errorMsg) {
@@ -120,27 +137,15 @@ function onUser(res) {
   document.getElementById('signOutLink').addEventListener('click', function (e) { e.preventDefault(); signOutUser(); });
   renderShell();
   if (!IS_MANAGER) {
-    // Managers only need the team overview — no personal punch flow, no
-    // Roster row of their own, nothing to fetch here for them.
     refreshDayState();
     requestLocation();
-    loadMyRoster();
+    loadTeamRoster();
   }
   setInterval(function () { const el = document.getElementById('clock'); if (el) el.textContent = new Date().toLocaleTimeString(); }, 1000);
 }
 
 function refreshDayState() {
   api({ action: 'getDayState', email: CURRENT.email }).then(function (s) { STATE = s; renderMe(); });
-}
-
-function loadMyRoster() {
-  api({ action: 'getMyMonthRoster', email: CURRENT.email }).then(function (r) {
-    MY_ROSTER = r;
-    renderMe();
-    const scrollEl = document.getElementById('monthRosterScroll');
-    const todayCell = scrollEl && scrollEl.querySelector('.today');
-    if (todayCell) todayCell.scrollIntoView({ inline: 'center', block: 'nearest' });
-  }).catch(function () { /* non-fatal — rest of the page still works */ });
 }
 
 function requestLocation() {
@@ -181,7 +186,9 @@ function renderMe() {
   const body = document.getElementById('tabBody');
   if (!body) return;
 
-  let html = '<div class="narrow">';
+  let html = renderRosterCard();
+
+  html += '<div class="section-heading">Today’s Summary</div>';
   html += '<div class="card"><h1>' + EMP.name + '</h1><div class="sub">' + EMP.email + ' &middot; ' + (EMP.empId || '') + '</div>';
   html += '<div id="clock" class="clock">' + new Date().toLocaleTimeString() + '</div>';
   html += '<div class="row"><span class="label">Date</span><span>' + new Date().toLocaleDateString() + '</span></div>';
@@ -198,12 +205,6 @@ function renderMe() {
     html += '<div class="status info">Getting your location…</div>';
   }
   html += '<a href="#" class="refresh" id="refreshLoc">Refresh location</a></div>';
-
-  if (!IS_MANAGER) {
-    html += '<div class="card"><h1>' + (MY_ROSTER ? MY_ROSTER.month : 'This Month') + ' Roster</h1>';
-    html += MY_ROSTER ? renderMonthRosterTable(MY_ROSTER.days) : '<div class="loading">Loading…</div>';
-    html += '</div>';
-  }
 
   const phaseText = {
     not_started: STATE.rosterCode ? 'Not punched in &middot; Roster: ' + STATE.rosterCode : 'Not punched in',
@@ -244,9 +245,9 @@ function renderMe() {
     html += '<div class="status err">You must be within office range to punch in/out or take a break.</div>';
   }
   html += '<div id="msg"></div></div>';
-  html += '</div>';
 
   body.innerHTML = html;
+  wireRosterNav();
   document.getElementById('refreshLoc').addEventListener('click', function (e) { e.preventDefault(); LOC_INFO = null; renderMe(); requestLocation(); });
   document.querySelectorAll('button[data-type]').forEach(function (btn) {
     btn.addEventListener('click', function () { onAction(btn.getAttribute('data-type'), btn); });
@@ -282,14 +283,7 @@ function renderTeam() {
   if (!body) return;
 
   // 1. Team roster grid — full width, navigable by week.
-  let html = '<div class="card"><h1>Team Roster</h1>';
-  html += '<div class="roster-nav">';
-  html += '<button class="roster-nav-btn" id="rosterPrev">‹ Prev</button>';
-  html += '<div class="roster-range">' + (TEAM_ROSTER ? TEAM_ROSTER.rangeLabel : 'Loading…') + '</div>';
-  html += '<div class="roster-nav-right"><button class="roster-nav-btn" id="rosterToday">Today</button><button class="roster-nav-btn" id="rosterNext">Next ›</button></div>';
-  html += '</div>';
-  html += TEAM_ROSTER ? renderTeamRosterTable(TEAM_ROSTER) : '<div class="loading">Loading…</div>';
-  html += '</div>';
+  let html = renderRosterCard();
 
   // 2. Day summary heading + live status.
   html += '<div class="section-heading">Today’s Summary</div>';
@@ -339,19 +333,14 @@ function renderTeam() {
   html += '</div>';
 
   body.innerHTML = html;
-  const prevBtn = document.getElementById('rosterPrev');
-  const nextBtn = document.getElementById('rosterNext');
-  const todayBtn = document.getElementById('rosterToday');
-  if (prevBtn) prevBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET -= 1; loadTeamRoster(); });
-  if (nextBtn) nextBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET += 1; loadTeamRoster(); });
-  if (todayBtn) todayBtn.addEventListener('click', function () { TEAM_ROSTER_OFFSET = 0; loadTeamRoster(); });
+  wireRosterNav();
 }
 
 function loadTeamRoster() {
   TEAM_ROSTER = null;
-  renderTeam();
+  renderActive();
   api({ action: 'getTeamRoster', email: CURRENT.email, weekOffset: TEAM_ROSTER_OFFSET })
-    .then(function (r) { TEAM_ROSTER = r; renderTeam(); })
+    .then(function (r) { TEAM_ROSTER = r; renderActive(); })
     .catch(function () { /* non-fatal — rest of the tab still shows */ });
 }
 

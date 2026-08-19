@@ -102,7 +102,8 @@ const ACTIONS = {
     }
   },
   getTeamRoster: function (p) {
-    requireManager_(p.email);
+    const res = resolveEmployee_(p.email);
+    if (res.error) throw new Error(res.error);
     const offset = Number(p.weekOffset || 0);
     const grid = getRosterGrid_();
     const employees = listActiveEmployees_();
@@ -126,23 +127,6 @@ const ACTIONS = {
         return { label: d.weekday + ' ' + d.day + '/' + (d.date.getMonth() + 1), isToday: d.key === todayKey };
       }),
       rows: rows
-    };
-  },
-  getMyMonthRoster: function (p) {
-    const res = resolveEmployee_(p.email);
-    if (res.error) throw new Error(res.error);
-    const grid = getRosterGrid_();
-    const now = new Date();
-    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const first = new Date(now.getFullYear(), now.getMonth(), 1);
-    const days = dateRangeInfo_(first, daysInMonth);
-    const todayKey = formatDdMmmYyyy_(now);
-
-    return {
-      month: Utilities.formatDate(now, Session.getScriptTimeZone(), 'MMMM yyyy'),
-      days: days.map(function (d) {
-        return { day: d.day, weekday: d.weekday, code: rosterCodeForDate_(grid, res.emp.name, d.key) || '—', isToday: d.key === todayKey };
-      })
     };
   },
   getTeamStatus: function (p) {

@@ -62,7 +62,7 @@ button:disabled{background:var(--surface-2);color:var(--text-muted);box-shadow:n
 .phase-idle{background:var(--grey-bg);color:var(--text-secondary);border-color:var(--border-strong);}
 .phase-done{background:var(--blue-bg);color:#7ab1f2;border-color:rgba(57,135,229,.45);}
 
-.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px;}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:4px;}
 .stat-tile{border:1.5px solid var(--border-strong);border-radius:12px;padding:12px 10px;text-align:center;background:var(--surface-2);}
 .stat-tile .stat-value{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;}
 .stat-tile .stat-label{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-top:3px;}

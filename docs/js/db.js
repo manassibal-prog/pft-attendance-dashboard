@@ -7,7 +7,7 @@ import { FIREBASE_CONFIG, CONFIG } from './config.js';
 const app = initializeApp(FIREBASE_CONFIG);
 export const auth = getAuth(app);
 
-const _READ_ACTIONS = new Set(['getCurrentUser', 'checkLocation', 'getDayState', 'getTeamRoster', 'getMyMonthRoster', 'getTeamStatus', 'getRecentLog']);
+const _READ_ACTIONS = new Set(['getCurrentUser', 'checkLocation', 'getDayState', 'getTeamRoster', 'getTeamStatus', 'getRecentLog']);
 const _READ_TIMEOUT_MS = 30000;
 const _WRITE_TIMEOUT_MS = 60000;
 const _inflight = {};
