@@ -1,0 +1,23 @@
+{
+  "name": "pft-attendance-dashboard",
+  "version": "1.0.0",
+  "description": "Live geofenced punch in/out + breaks dashboard for the PFT team, backed by the team's Google Sheet.",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/dayState.test.js && node test/roster.test.js && node test/dateFmt.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "firebase-admin": "^14.2.0",
+    "googleapis": "^176.0.0"
+  }
+}
