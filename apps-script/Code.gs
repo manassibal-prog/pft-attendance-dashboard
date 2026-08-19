@@ -124,7 +124,7 @@ function findEmployeeByEmail_(email) {
     if (String(data[i][emailCol]).trim().toLowerCase() === String(email).trim().toLowerCase()) {
       return {
         empId: data[i][idCol], name: data[i][nameCol], email: data[i][emailCol],
-        department: data[i][deptCol], shiftStart: data[i][shiftCol],
+        department: data[i][deptCol], shiftStart: timeCellToString_(data[i][shiftCol]),
         weeklyOff: data[i][weeklyOffCol], status: data[i][statusCol]
       };
     }
@@ -174,6 +174,15 @@ function parseShiftTime_(shiftStart, referenceDate) {
   const d = new Date(referenceDate);
   d.setHours(h, m, 0, 0);
   return d;
+}
+
+// Time-formatted Sheets cells read back as real Date objects. Sending one
+// nested inside an object across the google.script.run bridge can silently
+// fail to serialize (client gets null, server logs "Completed" — no error
+// anywhere to see), so anything crossing that bridge gets stringified first.
+function timeCellToString_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'HH:mm');
+  return v;
 }
 
 function labelForBreak_(bt) {
@@ -372,6 +381,17 @@ function checkLocation(lat, lng) {
   return { distance: distance, radius: settings.radius, within: distance <= settings.radius, officeName: settings.officeName };
 }
 
+// Same nested-Date risk as timeCellToString_ above: punchIn/punchOut are
+// Date objects one level deep inside the returned object, which is the
+// pattern that silently broke getCurrentUser(). Stringify before it crosses
+// the bridge rather than relying on Apps Script's nested-Date handling.
+function serializeState_(state) {
+  return Object.assign({}, state, {
+    punchIn: state.punchIn ? state.punchIn.toISOString() : null,
+    punchOut: state.punchOut ? state.punchOut.toISOString() : null
+  });
+}
+
 function getDayState() {
   const res = currentEmployee_();
   if (res.error) return { phase: 'not_started', breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, rosterCode: '', requiresGeofence: true };
@@ -379,7 +399,7 @@ function getDayState() {
   const events = getTodayEvents_(res.emp.empId);
   const state = computeDayState_(events);
   const rosterCode = getTodayRosterCodeFor_(res.emp.name, now, res.emp.weeklyOff);
-  return Object.assign({}, state, { rosterCode: rosterCode, requiresGeofence: rosterCode.toUpperCase() !== 'WFH' });
+  return Object.assign(serializeState_(state), { rosterCode: rosterCode, requiresGeofence: rosterCode.toUpperCase() !== 'WFH' });
 }
 
 function recordEvent(type, lat, lng) {
@@ -416,7 +436,7 @@ function recordEvent(type, lat, lng) {
     const newState = computeDayState_(todayEvents.concat([{ type: type, timestamp: now }]));
     updateDailySummary_(emp, now, newState, rosterCode, settings);
 
-    return { success: true, time: now.toLocaleTimeString(), distance: distance, state: newState, rosterCode: rosterCode, requiresGeofence: requiresGeofence };
+    return { success: true, time: now.toLocaleTimeString(), distance: distance, state: serializeState_(newState), rosterCode: rosterCode, requiresGeofence: requiresGeofence };
   } catch (err) {
     return { success: false, message: err.message };
   } finally {
@@ -454,7 +474,8 @@ function getTeamStatus() {
     if (row) {
       return {
         empId: e.empId, name: e.name, department: e.department,
-        punchIn: row[4] || null, punchOut: row[5] || null,
+        punchIn: row[4] instanceof Date ? row[4].toISOString() : (row[4] || null),
+        punchOut: row[5] instanceof Date ? row[5].toISOString() : (row[5] || null),
         lunch: row[6] || 0, tea: row[7] || 0, bio: row[8] || 0,
         netHours: row[11] || '', lateBy: row[12] || 0, status: row[13] || ''
       };
