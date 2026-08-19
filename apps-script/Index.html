@@ -76,10 +76,6 @@
     .stat-tile.t-amber{border-color:rgba(250,178,25,.5);} .stat-tile.t-amber .stat-value{color:var(--amber);}
     .stat-tile.t-green{border-color:rgba(12,163,12,.5);} .stat-tile.t-green .stat-value{color:#3ddc6f;}
 
-    .tabs{display:flex;gap:8px;margin-bottom:16px;}
-    .tab{flex:1;text-align:center;padding:11px;border-radius:12px;background:var(--surface);border:1px solid var(--border);color:var(--text-secondary);font-weight:700;font-size:13px;cursor:pointer;}
-    .tab.active{background:linear-gradient(135deg,var(--brand),#8a1358);border-color:var(--brand);color:#fff;box-shadow:0 6px 16px rgba(236,28,122,.3);}
-
     .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3ddc6f;margin-right:6px;box-shadow:0 0 0 0 rgba(61,220,111,.6);animation:pulse 1.6s infinite;}
     @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,111,.55);}70%{box-shadow:0 0 0 7px rgba(61,220,111,0);}100%{box-shadow:0 0 0 0 rgba(61,220,111,0);}}
 
@@ -232,9 +228,13 @@ function onUser(res) {
     '<span class="who-name">' + EMP.name + '</span>' +
     '<span class="role-pill ' + (IS_MANAGER ? 'manager">Manager' : 'advisor">Advisor') + '</span>';
   renderShell();
-  refreshDayState();
-  requestLocation();
-  if (!IS_MANAGER) loadMyRoster(); // managers have no Roster row — nothing to fetch
+  if (!IS_MANAGER) {
+    // Managers only need the team overview — no personal punch flow, no
+    // Roster row of their own, nothing to fetch here for them.
+    refreshDayState();
+    requestLocation();
+    loadMyRoster();
+  }
   setInterval(function () { const el = document.getElementById('clock'); if (el) el.textContent = new Date().toLocaleTimeString(); }, 1000);
 }
 
@@ -269,35 +269,21 @@ function requestLocation() {
 
 function fmtTime(v) { return v ? new Date(v).toLocaleTimeString() : '—'; }
 
+// Each role gets exactly one view — advisors their own attendance, managers
+// the team overview — with no tab switcher between them. Advisors can't
+// reach the team view even by URL/console tricks, since the server rejects
+// getTeamStatus/getRecentLog/getTeamRoster for non-managers regardless of
+// what the UI shows; managers simply have no punch flow to switch to.
 function renderShell() {
-  if (!IS_MANAGER) {
-    // Advisors get their own attendance only — no tab bar, no way to reach
-    // the team view even by URL/console tricks, since the server rejects
-    // getTeamStatus/getRecentLog for non-managers regardless of the UI.
-    document.getElementById('app').innerHTML = '<div id="tabBody"></div>';
-    switchTab('me');
-    return;
-  }
-  document.getElementById('app').innerHTML =
-    '<div class="narrow tabs"><div class="tab" id="tabMe">My Attendance</div><div class="tab" id="tabTeam">Team Status</div></div><div id="tabBody"></div>';
-  document.getElementById('tabMe').addEventListener('click', function () { switchTab('me'); });
-  document.getElementById('tabTeam').addEventListener('click', function () { switchTab('team'); });
-  switchTab('me');
-}
-
-function switchTab(tab) {
-  ACTIVE_TAB = tab;
-  const tabMe = document.getElementById('tabMe');
-  const tabTeam = document.getElementById('tabTeam');
-  if (tabMe) tabMe.classList.toggle('active', tab === 'me');
-  if (tabTeam) tabTeam.classList.toggle('active', tab === 'team');
-  if (teamPollHandle) { clearInterval(teamPollHandle); teamPollHandle = null; }
-  if (tab === 'me') {
-    renderMe();
-  } else {
+  document.getElementById('app').innerHTML = '<div id="tabBody"></div>';
+  if (IS_MANAGER) {
+    ACTIVE_TAB = 'team';
     renderTeam();
     loadTeam();
     teamPollHandle = setInterval(loadTeam, 20000);
+  } else {
+    ACTIVE_TAB = 'me';
+    renderMe();
   }
 }
 
