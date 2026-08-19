@@ -60,11 +60,13 @@
 
 <script>
 let EMP = null;
+let IS_MANAGER = false;
 let LAST_LOC = null;
 let LOC_INFO = null;
 let STATE = { phase: 'not_started', breakType: null, punchIn: null, punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, rosterCode: '', requiresGeofence: true };
 let ACTIVE_TAB = 'me';
 let TEAM = null;
+let RECENT_LOG = null;
 let teamPollHandle = null;
 
 const BREAK_LABEL = { LUNCH: 'Lunch Break', TEA: 'Tea Break', BIO: 'Bio Break' };
@@ -85,6 +87,7 @@ function onUser(res) {
     return;
   }
   EMP = res.emp;
+  IS_MANAGER = !!res.isManager;
   renderShell();
   refreshDayState();
   requestLocation();
@@ -113,6 +116,14 @@ function requestLocation() {
 function fmtTime(v) { return v ? new Date(v).toLocaleTimeString() : '—'; }
 
 function renderShell() {
+  if (!IS_MANAGER) {
+    // Advisors get their own attendance only — no tab bar, no way to reach
+    // the team view even by URL/console tricks, since the server rejects
+    // getTeamStatus/getRecentLog for non-managers regardless of the UI.
+    document.getElementById('app').innerHTML = '<div id="tabBody"></div>';
+    switchTab('me');
+    return;
+  }
   document.getElementById('app').innerHTML =
     '<div class="tabs"><div class="tab" id="tabMe">My Attendance</div><div class="tab" id="tabTeam">Team Status</div></div><div id="tabBody"></div>';
   document.getElementById('tabMe').addEventListener('click', function () { switchTab('me'); });
@@ -122,8 +133,10 @@ function renderShell() {
 
 function switchTab(tab) {
   ACTIVE_TAB = tab;
-  document.getElementById('tabMe').classList.toggle('active', tab === 'me');
-  document.getElementById('tabTeam').classList.toggle('active', tab === 'team');
+  const tabMe = document.getElementById('tabMe');
+  const tabTeam = document.getElementById('tabTeam');
+  if (tabMe) tabMe.classList.toggle('active', tab === 'me');
+  if (tabTeam) tabTeam.classList.toggle('active', tab === 'team');
   if (teamPollHandle) { clearInterval(teamPollHandle); teamPollHandle = null; }
   if (tab === 'me') {
     renderMe();
@@ -238,6 +251,20 @@ function renderTeam() {
       '<span class="status-pill ' + cls + '">' + (e.status || '—') + '</span></div>';
   });
   html += '</div>';
+
+  html += '<div class="card"><h1>Recent Activity</h1><div class="sub">Last ' + (RECENT_LOG ? RECENT_LOG.length : 0) + ' punch/break events</div>';
+  if (!RECENT_LOG) {
+    html += '<div class="loading">Loading…</div>';
+  } else if (!RECENT_LOG.length) {
+    html += '<div class="sub">No activity yet today.</div>';
+  } else {
+    RECENT_LOG.forEach(function (e) {
+      html += '<div class="team-row"><div><div class="team-name">' + e.name + '</div><div class="team-sub">' + e.label + '</div></div>' +
+        '<div class="team-sub">' + fmtTime(e.timestamp) + '</div></div>';
+    });
+  }
+  html += '</div>';
+
   body.innerHTML = html;
 }
 
@@ -248,6 +275,9 @@ function loadTeam() {
       if (body && ACTIVE_TAB === 'team') body.innerHTML = '<div class="card status err">' + err.message + '</div>';
     })
     .getTeamStatus();
+  google.script.run.withSuccessHandler(function (log) { RECENT_LOG = log; renderTeam(); })
+    .withFailureHandler(function () { /* non-fatal — Team Status card still shows */ })
+    .getRecentLog(30);
 }
 
 boot();

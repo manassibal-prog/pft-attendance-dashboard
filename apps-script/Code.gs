@@ -33,8 +33,8 @@ function initializeSheets() {
   if (!ss.getSheetByName(SHEET_EMPLOYEE)) {
     const sh = ss.insertSheet(SHEET_EMPLOYEE);
     sh.appendRow(['Emp ID', 'Employee Name', 'Official Email', 'Department', 'Designation',
-                  'Shift Start', 'Shift End', 'Weekly Off Day', 'Status']);
-    sh.getRange(1, 1, 1, 9).setFontWeight('bold');
+                  'Shift Start', 'Shift End', 'Weekly Off Day', 'Status', 'Role']);
+    sh.getRange(1, 1, 1, 10).setFontWeight('bold');
     sh.setFrozenRows(1);
   }
 
@@ -120,16 +120,29 @@ function findEmployeeByEmail_(email) {
   const shiftCol = headers.indexOf('Shift Start');
   const weeklyOffCol = headers.indexOf('Weekly Off Day');
   const statusCol = headers.indexOf('Status');
+  const roleCol = headers.indexOf('Role'); // -1 if the column doesn't exist yet — treated as Advisor
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][emailCol]).trim().toLowerCase() === String(email).trim().toLowerCase()) {
       return {
         empId: data[i][idCol], name: data[i][nameCol], email: data[i][emailCol],
         department: data[i][deptCol], shiftStart: timeCellToString_(data[i][shiftCol]),
-        weeklyOff: data[i][weeklyOffCol], status: data[i][statusCol]
+        weeklyOff: data[i][weeklyOffCol], status: data[i][statusCol],
+        role: roleCol > -1 ? String(data[i][roleCol] || 'Advisor').trim() : 'Advisor'
       };
     }
   }
   return null;
+}
+
+function isManager_(emp) {
+  return String(emp.role || '').trim().toLowerCase() === 'manager';
+}
+
+function requireManager_() {
+  const res = currentEmployee_();
+  if (res.error) throw new Error(res.error);
+  if (!isManager_(res.emp)) throw new Error('Only managers can view this.');
+  return res.emp;
 }
 
 function listActiveEmployees_() {
@@ -372,7 +385,7 @@ function getCurrentUser() {
   const res = currentEmployee_();
   if (res.error) return { error: res.error };
   const settings = getSettings_();
-  return { emp: res.emp, officeName: settings.officeName, radius: settings.radius };
+  return { emp: res.emp, isManager: isManager_(res.emp), officeName: settings.officeName, radius: settings.radius };
 }
 
 function checkLocation(lat, lng) {
@@ -448,8 +461,7 @@ function recordEvent(type, lat, lng) {
 // falling back to their Roster code if they haven't punched in yet. Fetches
 // Roster once and reuses it across everyone, rather than once per employee.
 function getTeamStatus() {
-  const res = currentEmployee_();
-  if (res.error) throw new Error(res.error);
+  requireManager_();
 
   const now = new Date();
   const tz = Session.getScriptTimeZone();
@@ -489,6 +501,36 @@ function getTeamStatus() {
   });
 
   return { employees: results, asOf: now.toISOString() };
+}
+
+const EVENT_LABEL = {
+  PUNCH_IN: 'Punched In', PUNCH_OUT: 'Punched Out',
+  LUNCH_START: 'Started Lunch Break', LUNCH_END: 'Ended Lunch Break',
+  TEA_START: 'Started Tea Break', TEA_END: 'Ended Tea Break',
+  BIO_START: 'Started Bio Break', BIO_END: 'Ended Bio Break'
+};
+
+// Manager-only: most recent successful punch/break events across the whole
+// team, newest first — the raw audit trail behind the summarized status.
+function getRecentLog(limit) {
+  requireManager_();
+  const n = limit || 30;
+
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
+  const data = sh.getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0] || r[9] !== 'Success') continue;
+    out.push({
+      timestamp: new Date(r[0]).toISOString(),
+      name: r[2],
+      type: r[4],
+      label: EVENT_LABEL[r[4]] || r[4]
+    });
+  }
+  out.sort(function (a, b) { return new Date(b.timestamp) - new Date(a.timestamp); });
+  return out.slice(0, n);
 }
 
 // ---------- Monthly Summary ----------
