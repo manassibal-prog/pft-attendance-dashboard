@@ -200,48 +200,66 @@ function renderMe() {
   }[STATE.phase];
   const phaseClass = { not_started: 'phase-idle', working: 'phase-working', on_break: 'phase-break', completed: 'phase-done' }[STATE.phase];
 
+  const canAct = !requiresGeofence || (LOC_INFO && !LOC_INFO.error && LOC_INFO.within);
+
   html += '<div class="card">';
   html += '<div class="phasebar ' + phaseClass + '">' + phaseText + '</div>';
   html += '<div class="stat-grid">';
-  html += '<div class="stat-tile t-green"><div class="stat-value">' + fmtTime(STATE.punchIn) + '</div><div class="stat-label">Punch In</div></div>';
-  html += '<div class="stat-tile t-blue"><div class="stat-value">' + fmtTime(STATE.punchOut) + '</div><div class="stat-label">Punch Out</div></div>';
-  html += '<div class="stat-tile t-amber"><div class="stat-value">' + Math.round((STATE.breakTotals && STATE.breakTotals.LUNCH) || 0) + ' min</div><div class="stat-label">Lunch Break</div></div>';
-  html += '<div class="stat-tile t-amber"><div class="stat-value">' + Math.round((STATE.breakTotals && STATE.breakTotals.TEA) || 0) + ' min</div><div class="stat-label">Tea Break</div></div>';
-  html += '<div class="stat-tile t-amber"><div class="stat-value">' + Math.round((STATE.breakTotals && STATE.breakTotals.BIO) || 0) + ' min</div><div class="stat-label">Bio Break</div></div>';
+  html += renderStatTile('PUNCH_IN', canAct);
+  html += renderStatTile('PUNCH_OUT', canAct);
+  html += renderStatTile('LUNCH', canAct);
+  html += renderStatTile('TEA', canAct);
+  html += renderStatTile('BIO', canAct);
   html += '</div>';
 
-  const canAct = !requiresGeofence || (LOC_INFO && !LOC_INFO.error && LOC_INFO.within);
-  const dis = canAct ? '' : 'disabled';
-
-  if (STATE.phase === 'not_started') {
-    html += '<button class="btn-in" data-type="PUNCH_IN" ' + dis + '>Punch In</button>';
-  } else if (STATE.phase === 'working') {
-    html += '<div class="grid2">';
-    html += '<button class="btn-break" data-type="LUNCH_START" ' + dis + '>Start Lunch Break</button>';
-    html += '<button class="btn-break" data-type="TEA_START" ' + dis + '>Start Tea Break</button>';
-    html += '</div>';
-    html += '<button class="btn-break" data-type="BIO_START" ' + dis + '>Start Bio Break</button>';
-    html += '<button class="btn-out" data-type="PUNCH_OUT" ' + dis + '>Punch Out</button>';
-  } else if (STATE.phase === 'on_break') {
-    html += '<button class="btn-end" data-type="' + STATE.breakType + '_END" ' + dis + '>End ' + BREAK_LABEL[STATE.breakType] + '</button>';
-  } else if (STATE.phase === 'completed') {
+  if (STATE.phase === 'completed') {
     html += '<div class="status ok">You have completed attendance for today.</div>';
-  }
-  if (!canAct && STATE.phase !== 'completed') {
+  } else if (!canAct) {
     html += '<div class="status err">You must be within office range to punch in/out or take a break.</div>';
   }
   html += '<div id="msg"></div></div>';
 
   body.innerHTML = html;
   wireRosterNav();
-  document.querySelectorAll('button[data-type]').forEach(function (btn) {
-    btn.addEventListener('click', function () { onAction(btn.getAttribute('data-type'), btn); });
+  document.querySelectorAll('[data-type]').forEach(function (el) {
+    el.addEventListener('click', function () { onAction(el.getAttribute('data-type')); });
   });
 }
 
-function onAction(type, btn) {
-  document.querySelectorAll('button[data-type]').forEach(function (b) { b.disabled = true; });
-  btn.textContent = 'Please wait…';
+// Tiles double as controls: Punch In / Punch Out / each break tile is
+// tappable exactly when that action is valid right now (mirrors
+// validTransition_ server-side), and a running break pulses to show it's
+// live. Not clickable -> plain display tile, same look as before.
+function tileTypeFor_(key) {
+  const phase = STATE.phase;
+  if (key === 'PUNCH_IN') return (!STATE.punchIn && phase === 'not_started') ? 'PUNCH_IN' : null;
+  if (key === 'PUNCH_OUT') return (phase === 'working') ? 'PUNCH_OUT' : null;
+  if (phase === 'on_break' && STATE.breakType === key) return key + '_END';
+  if (phase === 'working') return key + '_START';
+  return null;
+}
+
+function renderStatTile(key, canAct) {
+  const isBreak = key === 'LUNCH' || key === 'TEA' || key === 'BIO';
+  const value = key === 'PUNCH_IN' ? fmtTime(STATE.punchIn)
+    : key === 'PUNCH_OUT' ? fmtTime(STATE.punchOut)
+    : Math.round((STATE.breakTotals && STATE.breakTotals[key]) || 0) + ' min';
+  const label = key === 'PUNCH_IN' ? 'Punch In' : key === 'PUNCH_OUT' ? 'Punch Out' : BREAK_LABEL[key];
+  const colorClass = key === 'PUNCH_IN' ? 't-green' : key === 'PUNCH_OUT' ? 't-blue' : 't-amber';
+  const active = isBreak && STATE.phase === 'on_break' && STATE.breakType === key;
+  const actionType = tileTypeFor_(key);
+  const clickable = !!actionType && canAct;
+
+  let cls = 'stat-tile ' + colorClass;
+  if (active) cls += ' stat-tile-active';
+  if (clickable) cls += ' stat-tile-clickable';
+  const attr = clickable ? ' data-type="' + actionType + '"' : '';
+
+  return '<div class="' + cls + '"' + attr + '><div class="stat-value">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+}
+
+function onAction(type) {
+  document.querySelectorAll('[data-type]').forEach(function (el) { el.classList.add('pending'); });
   api({ action: 'recordEvent', email: CURRENT.email, type: type, lat: LAST_LOC ? LAST_LOC.lat : '', lng: LAST_LOC ? LAST_LOC.lng : '' })
     .then(function (res) {
       if (res.success) {

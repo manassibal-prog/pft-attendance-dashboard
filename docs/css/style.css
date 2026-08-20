@@ -38,12 +38,7 @@ h1{font-size:19px;margin:0 0 4px;color:var(--text);}
 button{width:100%;padding:15px;font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;border:none;border-radius:12px;color:#fff;margin-top:10px;cursor:pointer;transition:transform .08s ease,filter .15s ease;}
 button:active{transform:scale(.98);}
 .btn-in{background:linear-gradient(135deg,#16c05e,#0ca30c);box-shadow:0 6px 18px rgba(12,163,12,.35);}
-.btn-out{background:linear-gradient(135deg,#f0555a,var(--red));box-shadow:0 6px 18px rgba(229,72,77,.35);}
-.btn-break{background:linear-gradient(135deg,#ffc247,var(--amber));color:#241a02;box-shadow:0 6px 18px rgba(250,178,25,.3);}
-.btn-end{background:linear-gradient(135deg,#5aa1ec,var(--blue));box-shadow:0 6px 18px rgba(57,135,229,.35);}
 button:disabled{background:var(--surface-2);color:var(--text-muted);box-shadow:none;cursor:not-allowed;}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
-.grid2 button{margin-top:0;}
 
 .status{text-align:center;font-size:12.5px;margin-top:10px;padding:10px;border-radius:10px;border:1px solid;}
 .ok{background:var(--green-bg);color:#3ddc6f;border-color:rgba(12,163,12,.4);}
@@ -69,6 +64,13 @@ button:disabled{background:var(--surface-2);color:var(--text-muted);box-shadow:n
 .stat-tile.t-blue{border-color:rgba(57,135,229,.5);} .stat-tile.t-blue .stat-value{color:#7ab1f2;}
 .stat-tile.t-amber{border-color:rgba(250,178,25,.5);} .stat-tile.t-amber .stat-value{color:var(--amber);}
 .stat-tile.t-green{border-color:rgba(12,163,12,.5);} .stat-tile.t-green .stat-value{color:#3ddc6f;}
+
+.stat-tile-clickable{cursor:pointer;transition:transform .08s ease,box-shadow .15s ease;}
+.stat-tile-clickable:hover{box-shadow:0 0 0 2px var(--brand);}
+.stat-tile-clickable:active{transform:scale(.96);}
+.stat-tile-active{border-color:var(--amber);box-shadow:0 0 0 2px rgba(250,178,25,.5);animation:tilePulse 1.6s infinite;}
+@keyframes tilePulse{0%{box-shadow:0 0 0 0 rgba(250,178,25,.5);}70%{box-shadow:0 0 0 7px rgba(250,178,25,0);}100%{box-shadow:0 0 0 0 rgba(250,178,25,0);}}
+.stat-tile.pending{opacity:.5;pointer-events:none;}
 
 .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3ddc6f;margin-right:6px;box-shadow:0 0 0 0 rgba(61,220,111,.6);animation:pulse 1.6s infinite;}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,111,.55);}70%{box-shadow:0 0 0 7px rgba(61,220,111,0);}100%{box-shadow:0 0 0 0 rgba(61,220,111,0);}}
