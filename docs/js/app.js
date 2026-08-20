@@ -189,22 +189,8 @@ function renderMe() {
   let html = renderRosterCard();
 
   html += '<div class="section-heading">Today’s Summary</div>';
-  html += '<div class="card"><h1>' + EMP.name + '</h1><div class="sub">' + EMP.email + ' &middot; ' + (EMP.empId || '') + '</div>';
-  html += '<div id="clock" class="clock">' + new Date().toLocaleTimeString() + '</div>';
-  html += '<div class="row"><span class="label">Date</span><span>' + new Date().toLocaleDateString() + '</span></div>';
 
   const requiresGeofence = STATE.requiresGeofence !== false;
-  if (!requiresGeofence) {
-    html += '<div class="status info">Today is marked WFH in Roster — location check is not required.</div>';
-  } else if (LOC_INFO && LOC_INFO.error) {
-    html += '<div class="status err">' + LOC_INFO.error + '</div>';
-  } else if (LOC_INFO) {
-    html += '<div class="row"><span class="label">Distance from office</span><span>' + LOC_INFO.distance + ' m</span></div>';
-    html += '<div class="row"><span class="label">Geofence</span><span class="badge ' + (LOC_INFO.within ? 'badge-ok">Within Range' : 'badge-bad">Out of Range') + '</span></div>';
-  } else {
-    html += '<div class="status info">Getting your location…</div>';
-  }
-  html += '<a href="#" class="refresh" id="refreshLoc">Refresh location</a></div>';
 
   const phaseText = {
     not_started: STATE.rosterCode ? 'Not punched in &middot; Roster: ' + STATE.rosterCode : 'Not punched in',
@@ -248,7 +234,6 @@ function renderMe() {
 
   body.innerHTML = html;
   wireRosterNav();
-  document.getElementById('refreshLoc').addEventListener('click', function (e) { e.preventDefault(); LOC_INFO = null; renderMe(); requestLocation(); });
   document.querySelectorAll('button[data-type]').forEach(function (btn) {
     btn.addEventListener('click', function () { onAction(btn.getAttribute('data-type'), btn); });
   });
