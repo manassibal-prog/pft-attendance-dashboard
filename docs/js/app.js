@@ -1,6 +1,10 @@
 import { onAuthReady, signIn, signOutUser } from './auth.js';
 import { api } from './db.js';
 
+// Applied immediately (before first render) so the page never flashes the
+// wrong theme on load.
+document.documentElement.setAttribute('data-theme', localStorage.getItem('pft-theme') || 'dark');
+
 let CURRENT = null; // { email, name } from Firebase
 let EMP = null;
 let IS_MANAGER = false;
@@ -79,10 +83,39 @@ function wireRosterNav() {
 
 function renderActive() { if (ACTIVE_TAB === 'team') renderTeam(); else renderMe(); }
 
+// ---------- Theme toggle + live clock (both visible regardless of auth state) ----------
+function currentTheme() { return localStorage.getItem('pft-theme') || 'dark'; }
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('pft-theme', theme);
+}
+function renderThemeToggle() {
+  const theme = currentTheme();
+  return '<button id="themeToggle" class="theme-toggle" type="button">' + (theme === 'dark' ? '☀️ Light' : '🌙 Dark') + '</button>';
+}
+function wireThemeToggle() {
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+  btn.addEventListener('click', function () {
+    const next = currentTheme() === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    btn.textContent = next === 'dark' ? '☀️ Light' : '🌙 Dark';
+  });
+}
+
+function renderClock() {
+  const el = document.getElementById('appbarCenter');
+  if (!el) return;
+  const now = new Date();
+  el.textContent = now.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }) + ' · ' + now.toLocaleTimeString();
+}
+function startClock() { renderClock(); setInterval(renderClock, 1000); }
+
 // ---------- Sign-in screen ----------
 function renderSignIn(errorMsg) {
   const right = document.getElementById('appbarRight');
-  if (right) right.innerHTML = '';
+  if (right) right.innerHTML = renderThemeToggle();
+  wireThemeToggle();
   document.getElementById('app').innerHTML =
     '<div class="narrow"><div class="card" style="text-align:center;padding:44px 24px;">' +
     '<div class="brand-mark" style="width:56px;height:56px;font-size:28px;margin:0 auto 18px;">W</div>' +
@@ -99,6 +132,7 @@ function renderSignIn(errorMsg) {
 
 // ---------- Boot / identity ----------
 function boot() {
+  startClock();
   onAuthReady(function (user, errorCode) {
     if (teamPollHandle) { clearInterval(teamPollHandle); teamPollHandle = null; }
     if (!user) {
@@ -122,6 +156,8 @@ function onFatal(err) {
 
 function onUser(res) {
   if (res.error) {
+    document.getElementById('appbarRight').innerHTML = renderThemeToggle();
+    wireThemeToggle();
     document.getElementById('app').innerHTML =
       '<div class="card"><h1>Access denied</h1><div class="status err">' + res.error + '</div>' +
       '<button id="signOutBtn" style="margin-top:14px;">Sign out</button></div>';
@@ -131,17 +167,20 @@ function onUser(res) {
   EMP = res.emp;
   IS_MANAGER = !!res.isManager;
   document.getElementById('appbarRight').innerHTML =
-    '<span class="who-name">' + EMP.name + '</span>' +
-    '<span class="role-pill ' + (IS_MANAGER ? 'manager">Manager' : 'advisor">Advisor') + '</span>' +
-    '<a href="#" id="signOutLink" style="color:var(--text-muted);font-size:12px;margin-left:4px;">Sign out</a>';
+    '<div class="appbar-right-top">' +
+      '<span class="who-name">' + EMP.name + '</span>' +
+      '<span class="role-pill ' + (IS_MANAGER ? 'manager">Manager' : 'advisor">Advisor') + '</span>' +
+      '<a href="#" id="signOutLink" style="color:var(--text-muted);font-size:12px;margin-left:4px;">Sign out</a>' +
+    '</div>' +
+    renderThemeToggle();
   document.getElementById('signOutLink').addEventListener('click', function (e) { e.preventDefault(); signOutUser(); });
+  wireThemeToggle();
   renderShell();
   if (!IS_MANAGER) {
     refreshDayState();
     requestLocation();
     loadTeamRoster();
   }
-  setInterval(function () { const el = document.getElementById('clock'); if (el) el.textContent = new Date().toLocaleTimeString(); }, 1000);
 }
 
 function refreshDayState() {
