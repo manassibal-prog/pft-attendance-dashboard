@@ -191,8 +191,15 @@ function onUser(res) {
   }
 }
 
-function refreshDayState() {
-  api({ action: 'getDayState', email: CURRENT.email }).then(function (s) { STATE = s; renderMe(); });
+function refreshDayState(afterMsg) {
+  api({ action: 'getDayState', email: CURRENT.email }).then(function (s) {
+    STATE = s;
+    renderMe();
+    if (afterMsg) {
+      const msg = document.getElementById('msg');
+      if (msg) msg.innerHTML = afterMsg;
+    }
+  });
 }
 
 function requestLocation() {
@@ -353,15 +360,17 @@ function onAction(type) {
         const msg = document.getElementById('msg');
         if (msg) msg.innerHTML = '<div class="status ok">Recorded at ' + res.time + '.</div>';
       } else {
-        renderMe();
-        const msg = document.getElementById('msg');
-        if (msg) msg.innerHTML = '<div class="status err">' + res.message + '</div>';
+        // A rejection here means our local STATE disagreed with the server
+        // about what's valid right now — trust the server, not our stale
+        // guess, so the screen can't get stuck out of sync with it.
+        refreshDayState('<div class="status err">' + res.message + '</div>');
       }
     })
     .catch(function (err) {
-      renderMe();
-      const msg = document.getElementById('msg');
-      if (msg) msg.innerHTML = '<div class="status err">' + err.message + '</div>';
+      // Timed out / network error: the write may well have gone through on
+      // the server even though this response never arrived — always
+      // reconcile with getDayState rather than assume nothing happened.
+      refreshDayState('<div class="status err">' + err.message + '</div>');
     });
 }
 
