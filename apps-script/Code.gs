@@ -113,11 +113,17 @@ const ACTIONS = {
     const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + mondayOffset);
     const days = dateRangeInfo_(monday, 7);
     const todayKey = formatDdMmmYyyy_(today);
+    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const logIndex = dailyLogIndexForDates_(days.map(function (d) { return d.key; }));
 
     const rows = employees.map(function (e) {
       return {
         empId: e.empId, name: e.name,
-        codes: days.map(function (d) { return rosterCodeForDate_(grid, e.name, d.key) || '—'; })
+        codes: days.map(function (d) {
+          const raw = rosterCodeForDate_(grid, e.name, d.key);
+          const logRow = logIndex[e.empId + '|' + d.key];
+          return shiftDisplayCode_(raw, logRow, d.date < todayMidnight) || '—';
+        })
       };
     });
 
@@ -183,6 +189,48 @@ const ACTIONS = {
     });
 
     return { employees: results, asOf: now.toISOString() };
+  },
+  // Manager-only: the Day End Report for one arbitrary past (or today's)
+  // date, rather than always "today" like getTeamStatus. No live "since"
+  // status here — a finished day just has its final Daily Attendance Log
+  // row, or (if nobody punched in) a Roster-derived fallback code.
+  getDayEndReport: function (p) {
+    requireManager_(p.email);
+    const tz = Session.getScriptTimeZone();
+    const targetDate = p.date ? parseYyyyMmDd_(p.date) : new Date();
+    const targetDayStr = Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd');
+
+    const logSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_LOG);
+    const logData = logSh.getDataRange().getValues();
+    const rowsByEmp = {};
+    for (let i = 1; i < logData.length; i++) {
+      const r = logData[i];
+      if (!r[0]) continue;
+      if (Utilities.formatDate(new Date(r[0]), tz, 'yyyy-MM-dd') === targetDayStr) rowsByEmp[String(r[1])] = r;
+    }
+
+    const employees = listActiveEmployees_();
+    const rosterGrid = getRosterGrid_();
+    const now = new Date();
+    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const isPast = targetDate < todayMidnight;
+
+    const results = employees.map(function (e) {
+      const row = rowsByEmp[e.empId];
+      if (row) {
+        return {
+          empId: e.empId, name: e.name,
+          punchIn: row[4] instanceof Date ? row[4].toISOString() : (row[4] || null),
+          punchOut: row[5] instanceof Date ? row[5].toISOString() : (row[5] || null),
+          totalBreak: row[9] || 0, gross: row[10] || '', netHours: row[11] || '', status: row[13] || ''
+        };
+      }
+      const raw = rosterCodeFromGrid_(rosterGrid, e.name, targetDate, e.weeklyOff);
+      const status = shiftDisplayCode_(raw, null, isPast) || raw || (isPast ? 'Absent' : 'Not Started');
+      return { empId: e.empId, name: e.name, punchIn: null, punchOut: null, totalBreak: 0, gross: '', netHours: '', status: status };
+    });
+
+    return { date: targetDayStr, employees: results };
   },
   getRecentLog: function (p) {
     requireManager_(p.email);
@@ -499,6 +547,49 @@ function formatRangeLabel_(days) {
   return first.getDate() + ' ' + MONTH_ABBR[first.getMonth()] + ' – ' + last.getDate() + ' ' + MONTH_ABBR[last.getMonth()] + ' ' + last.getFullYear();
 }
 
+function parseYyyyMmDd_(s) {
+  const parts = String(s).split('-');
+  return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+}
+
+// Roster carries actual shift assignments ("10-7" / "11-8") instead of a
+// plain P for some employees. The grid should show real attendance, not the
+// plan, so a shift code resolves to: P/HD once that day's Daily Attendance
+// Log row says whether they cleared 4.5 net working hours (still mid-shift,
+// i.e. punched in but no net hours yet -> tentatively P), UP if the day is
+// already over and they never punched in at all, or — for today/future,
+// where it's simply too early to know — the raw shift text unchanged.
+const SHIFT_CODE_RE = /^(10-7|11-8)$/;
+function shiftDisplayCode_(rawCode, dailyLogRow, isPastDate) {
+  const trimmed = String(rawCode || '').trim();
+  if (!SHIFT_CODE_RE.test(trimmed)) return trimmed;
+  if (dailyLogRow) {
+    const netHours = dailyLogRow[11];
+    if (netHours === '' || netHours === null || netHours === undefined) return 'P';
+    return Number(netHours) < 4.5 ? 'HD' : 'P';
+  }
+  return isPastDate ? 'UP' : trimmed;
+}
+
+// Daily Attendance Log rows for a specific set of "dd/MMM/yyyy" dates,
+// indexed by "empId|dateKey" — one sheet read serving a whole week's worth
+// of shiftDisplayCode_ lookups instead of one read per cell.
+function dailyLogIndexForDates_(dateKeys) {
+  const wanted = {};
+  dateKeys.forEach(function (k) { wanted[k] = true; });
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_LOG);
+  const data = sh.getDataRange().getValues();
+  const idx = {};
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0]) continue;
+    const key = formatDdMmmYyyy_(new Date(r[0]));
+    if (!wanted[key]) continue;
+    idx[String(r[1]) + '|' + key] = r;
+  }
+  return idx;
+}
+
 // ---------- Day-state engine ----------
 // Replays today's successful events into: not_started -> working -> on_break -> working -> ... -> completed
 function computeDayState_(events) {
@@ -521,7 +612,10 @@ function computeDayState_(events) {
     }
   });
 
-  return { phase: phase, breakType: breakType, punchIn: punchIn, punchOut: punchOut, breakTotals: breakTotals };
+  return {
+    phase: phase, breakType: breakType, punchIn: punchIn, punchOut: punchOut, breakTotals: breakTotals,
+    breakStartedAt: phase === 'on_break' ? breakStart[breakType] : null
+  };
 }
 
 function validTransition_(phase, breakType, type) {
@@ -620,7 +714,8 @@ function updateDailySummary_(emp, now, state, rosterCode, settings) {
 function serializeState_(state) {
   return Object.assign({}, state, {
     punchIn: state.punchIn ? state.punchIn.toISOString() : null,
-    punchOut: state.punchOut ? state.punchOut.toISOString() : null
+    punchOut: state.punchOut ? state.punchOut.toISOString() : null,
+    breakStartedAt: state.breakStartedAt ? state.breakStartedAt.toISOString() : null
   });
 }
 

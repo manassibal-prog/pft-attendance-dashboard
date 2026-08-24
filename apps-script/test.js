@@ -145,4 +145,30 @@ t('formatRangeLabel_ matches "17 Aug – 23 Aug 2026" style', () => {
   assertEq(sandbox.formatRangeLabel_(days), '17 Aug – 23 Aug 2026');
 });
 
+// ---- shiftDisplayCode_ (Roster shift codes "10-7"/"11-8" -> real P/HD/UP) ----
+const logRow = (netHours) => { const r = []; r[11] = netHours; return r; };
+
+t('shiftDisplayCode_: non-shift codes pass through unchanged regardless of log/date', () => {
+  assertEq(sandbox.shiftDisplayCode_('P', null, true), 'P');
+  assertEq(sandbox.shiftDisplayCode_('WFH', logRow(5), false), 'WFH');
+  assertEq(sandbox.shiftDisplayCode_('', null, true), '');
+});
+t('shiftDisplayCode_: shift code with a completed day >= 4.5 net hours -> P', () => {
+  assertEq(sandbox.shiftDisplayCode_('10-7', logRow(5), false), 'P');
+  assertEq(sandbox.shiftDisplayCode_('11-8', logRow(4.5), true), 'P');
+});
+t('shiftDisplayCode_: shift code with a completed day < 4.5 net hours -> HD', () => {
+  assertEq(sandbox.shiftDisplayCode_('10-7', logRow(4.49), false), 'HD');
+  assertEq(sandbox.shiftDisplayCode_('10-7', logRow(2), false), 'HD');
+});
+t('shiftDisplayCode_: punched in but net hours not yet computed (still mid-shift) -> P', () => {
+  assertEq(sandbox.shiftDisplayCode_('10-7', logRow(''), false), 'P');
+});
+t('shiftDisplayCode_: shift code, no log row, day already past -> UP', () => {
+  assertEq(sandbox.shiftDisplayCode_('11-8', null, true), 'UP');
+});
+t('shiftDisplayCode_: shift code, no log row, today/future -> raw shift text unchanged', () => {
+  assertEq(sandbox.shiftDisplayCode_('10-7', null, false), '10-7');
+});
+
 console.log('done');

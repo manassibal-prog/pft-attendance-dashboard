@@ -17,6 +17,14 @@ let TEAM_ROSTER = null;
 let TEAM_ROSTER_OFFSET = 0;
 let RECENT_LOG = null;
 let teamPollHandle = null;
+let DAY_REPORT = null;
+let DAY_REPORT_DATE = todayYyyyMmDd_();
+let breakTimerHandle = null;
+
+function todayYyyyMmDd_() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
 
 const BREAK_LABEL = { LUNCH: 'Lunch Break', TEA: 'Tea Break', BIO: 'Bio Break' };
 const EVENT_DOT = { PUNCH_IN: 'ed-in', PUNCH_OUT: 'ed-out', LUNCH_START: 'ed-start', TEA_START: 'ed-start', BIO_START: 'ed-start', LUNCH_END: 'ed-end', TEA_END: 'ed-end', BIO_END: 'ed-end' };
@@ -245,10 +253,12 @@ function renderMe() {
   html += '<div class="phasebar ' + phaseClass + '">' + phaseText + '</div>';
   html += '<div class="stat-grid">';
   html += renderStatTile('PUNCH_IN', canAct);
-  html += renderStatTile('PUNCH_OUT', canAct);
   html += renderStatTile('LUNCH', canAct);
   html += renderStatTile('TEA', canAct);
   html += renderStatTile('BIO', canAct);
+  html += renderStatTile('PUNCH_OUT', canAct);
+  html += '<div class="total-break-bar"><span class="stat-label" style="text-transform:none;font-size:13px;">Total Break Time</span>' +
+    '<span class="stat-value" id="tile-TOTAL-BREAK">' + renderTotalBreakValue_() + '</span></div>';
   html += '</div>';
 
   if (STATE.phase === 'completed') {
@@ -263,6 +273,7 @@ function renderMe() {
   document.querySelectorAll('[data-type]').forEach(function (el) {
     el.addEventListener('click', function () { onAction(el.getAttribute('data-type')); });
   });
+  startBreakTimer_();
 }
 
 // Tiles double as controls: Punch In / Punch Out / each break tile is
@@ -280,21 +291,56 @@ function tileTypeFor_(key) {
 
 function renderStatTile(key, canAct) {
   const isBreak = key === 'LUNCH' || key === 'TEA' || key === 'BIO';
+  const active = isBreak && STATE.phase === 'on_break' && STATE.breakType === key;
   const value = key === 'PUNCH_IN' ? fmtTime(STATE.punchIn)
     : key === 'PUNCH_OUT' ? fmtTime(STATE.punchOut)
+    : active ? fmtMmSs_(elapsedSecondsSince_(STATE.breakStartedAt))
     : Math.round((STATE.breakTotals && STATE.breakTotals[key]) || 0) + ' min';
   const label = key === 'PUNCH_IN' ? 'Punch In' : key === 'PUNCH_OUT' ? 'Punch Out' : BREAK_LABEL[key];
   const colorClass = key === 'PUNCH_IN' ? 't-green' : key === 'PUNCH_OUT' ? 't-blue' : 't-amber';
-  const active = isBreak && STATE.phase === 'on_break' && STATE.breakType === key;
+  const posClass = key === 'PUNCH_IN' ? 'tile-punchin' : key === 'PUNCH_OUT' ? 'tile-punchout' : 'tile-' + key.toLowerCase();
   const actionType = tileTypeFor_(key);
   const clickable = !!actionType && canAct;
 
-  let cls = 'stat-tile ' + colorClass;
+  let cls = 'stat-tile ' + colorClass + ' ' + posClass;
   if (active) cls += ' stat-tile-active';
   if (clickable) cls += ' stat-tile-clickable';
   const attr = clickable ? ' data-type="' + actionType + '"' : '';
+  const valueId = isBreak ? ' id="tile-' + key + '"' : '';
 
-  return '<div class="' + cls + '"' + attr + '><div class="stat-value">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+  return '<div class="' + cls + '"' + attr + '><div class="stat-value"' + valueId + '>' + value + '</div><div class="stat-label">' + label + '</div></div>';
+}
+
+// ---------- Live break timer ----------
+function elapsedSecondsSince_(isoTimestamp) {
+  if (!isoTimestamp) return 0;
+  return Math.max(0, (Date.now() - new Date(isoTimestamp).getTime()) / 1000);
+}
+function fmtMmSs_(totalSeconds) {
+  const m = Math.floor(totalSeconds / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+function totalBreakSeconds_() {
+  const baseMin = ['LUNCH', 'TEA', 'BIO'].reduce(function (sum, k) { return sum + ((STATE.breakTotals && STATE.breakTotals[k]) || 0); }, 0);
+  const liveSec = STATE.phase === 'on_break' ? elapsedSecondsSince_(STATE.breakStartedAt) : 0;
+  return baseMin * 60 + liveSec;
+}
+function renderTotalBreakValue_() {
+  return STATE.phase === 'on_break' ? fmtMmSs_(totalBreakSeconds_()) : Math.round(totalBreakSeconds_() / 60) + ' min';
+}
+function tickBreakTimer_() {
+  if (STATE.phase !== 'on_break' || !STATE.breakStartedAt) return;
+  const activeEl = document.getElementById('tile-' + STATE.breakType);
+  if (activeEl) activeEl.textContent = fmtMmSs_(elapsedSecondsSince_(STATE.breakStartedAt));
+  const totalEl = document.getElementById('tile-TOTAL-BREAK');
+  if (totalEl) totalEl.textContent = renderTotalBreakValue_();
+}
+function startBreakTimer_() {
+  if (breakTimerHandle) { clearInterval(breakTimerHandle); breakTimerHandle = null; }
+  if (STATE.phase === 'on_break' && STATE.breakStartedAt) {
+    breakTimerHandle = setInterval(tickBreakTimer_, 1000);
+  }
 }
 
 function onAction(type) {
@@ -344,16 +390,21 @@ function renderTeam() {
   }
   html += '</div>';
 
-  // 3. Day End Report — login/logout, total login time, active/working time, break time.
-  html += '<div class="card"><h1>Day End Report</h1><div class="sub">Today &middot; ' + new Date().toLocaleDateString() + '</div>';
-  if (!TEAM) {
+  // 3. Day End Report — login/logout, total login time, active/working time,
+  // break time, filterable to any past date.
+  html += '<div class="card"><h1>Day End Report</h1>';
+  html += '<div class="report-datebar"><label class="sub" for="reportDate" style="margin:0;">Date</label>' +
+    '<input type="date" id="reportDate" value="' + DAY_REPORT_DATE + '" max="' + todayYyyyMmDd_() + '">' +
+    (DAY_REPORT_DATE !== todayYyyyMmDd_() ? '<button class="roster-nav-btn" id="reportToday" type="button">Today</button>' : '') +
+    '</div>';
+  if (!DAY_REPORT) {
     html += '<div class="loading">Loading…</div>';
   } else {
     html += '<div class="data-table-wrap"><table class="data-table"><thead><tr>' +
-      '<th>Advisor</th><th>Login Time</th><th>Logout Time</th><th>Total Login Time</th><th>Active/Working Time</th><th>Total Break Time</th>' +
+      '<th>Advisor</th><th>Status</th><th>Login Time</th><th>Logout Time</th><th>Total Login Time</th><th>Active/Working Time</th><th>Total Break Time</th>' +
       '</tr></thead><tbody>';
-    TEAM.employees.forEach(function (e) {
-      html += '<tr><td class="dt-name">' + e.name + '</td><td>' + fmtTime(e.punchIn) + '</td><td>' + fmtTime(e.punchOut) + '</td>' +
+    DAY_REPORT.employees.forEach(function (e) {
+      html += '<tr><td class="dt-name">' + e.name + '</td><td>' + (e.status || '—') + '</td><td>' + fmtTime(e.punchIn) + '</td><td>' + fmtTime(e.punchOut) + '</td>' +
         '<td>' + fmtHours(e.gross) + '</td><td>' + fmtHours(e.netHours) + '</td><td>' + Math.round(e.totalBreak || 0) + ' min</td></tr>';
     });
     html += '</tbody></table></div>';
@@ -376,6 +427,10 @@ function renderTeam() {
 
   body.innerHTML = html;
   wireRosterNav();
+  const dateInput = document.getElementById('reportDate');
+  if (dateInput) dateInput.addEventListener('change', function () { DAY_REPORT_DATE = dateInput.value; loadDayEndReport(); });
+  const reportTodayBtn = document.getElementById('reportToday');
+  if (reportTodayBtn) reportTodayBtn.addEventListener('click', function () { DAY_REPORT_DATE = todayYyyyMmDd_(); loadDayEndReport(); });
 }
 
 function loadTeamRoster() {
@@ -383,6 +438,14 @@ function loadTeamRoster() {
   renderActive();
   api({ action: 'getTeamRoster', email: CURRENT.email, weekOffset: TEAM_ROSTER_OFFSET })
     .then(function (r) { TEAM_ROSTER = r; renderActive(); })
+    .catch(function () { /* non-fatal — rest of the tab still shows */ });
+}
+
+function loadDayEndReport() {
+  DAY_REPORT = null;
+  renderTeam();
+  api({ action: 'getDayEndReport', email: CURRENT.email, date: DAY_REPORT_DATE })
+    .then(function (r) { DAY_REPORT = r; renderTeam(); })
     .catch(function () { /* non-fatal — rest of the tab still shows */ });
 }
 
@@ -400,6 +463,9 @@ function loadTeam() {
   // on every 20s poll like the live status/log above. Nav clicks (loadTeamRoster)
   // fetch on demand separately.
   if (!TEAM_ROSTER) loadTeamRoster();
+  // Same for the Day End Report: refresh on every poll only while looking at
+  // today (still filling in); a past date is already final, no need to re-fetch.
+  if (!DAY_REPORT || DAY_REPORT_DATE === todayYyyyMmDd_()) loadDayEndReport();
 }
 
 boot();
