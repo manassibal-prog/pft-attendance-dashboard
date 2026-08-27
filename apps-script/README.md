@@ -11,7 +11,8 @@ people find alarming). Deployed instead as **"Execute as: Me" / "Anyone"**,
 this API needs no Google authorization at all to call — identity comes from
 Firebase Google Sign-In on the frontend (same pattern as the team's other
 dashboard, `wiom-l2`), and every request is checked server-side against a
-shared API key, the `@wiom.in` domain, and Employee Master.
+shared API key, an allowed-domain list (`@wiom.in` and `@i2e1.com` — see
+`ALLOWED_DOMAINS` in `Code.gs`), and Employee Master.
 
 ## What it does
 
@@ -27,7 +28,7 @@ shared API key, the `@wiom.in` domain, and Employee Master.
   manager-only actions (`getTeamStatus`, `getRecentLog`, `getTeamRoster`) —
   enforced server-side, not just hidden in the UI.
 - Identity is the `email` param sent with every request (set by the frontend
-  from the signed-in Firebase user) — verified against `@wiom.in` and
+  from the signed-in Firebase user) — verified against `ALLOWED_DOMAINS` and
   Employee Master before anything is trusted.
 
 ## API shape
@@ -56,7 +57,7 @@ than an HTTP error status.
 4. In the **Settings** tab, fill in real Office Latitude/Longitude/Radius
    (Google Maps → right-click your office → click the coordinates to copy).
 5. In **Employee Master**, make sure every active team member has their
-   **Official Email** (@wiom.in), Shift Start, and Weekly Off Day filled in —
+   **Official Email** (@wiom.in or @i2e1.com), Shift Start, and Weekly Off Day filled in —
    this is how the app matches a Google sign-in to a person.
 6. **Deploy → New deployment → Web app.** Execute as **"Me"**; Who has
    access: **"Anyone"**. Deploy, copy the `/exec` URL into

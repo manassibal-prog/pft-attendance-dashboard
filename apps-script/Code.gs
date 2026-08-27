@@ -4,7 +4,7 @@
  *
  * This is a headless JSON API only — it serves no HTML. The frontend lives
  * on GitHub Pages (../docs) and handles identity itself via Firebase Google
- * Sign-In (restricted to @wiom.in). Every request here carries the caller's
+ * Sign-In (restricted to @wiom.in / @i2e1.com). Every request here carries the caller's
  * email as a plain parameter and a shared API key; both are checked against
  * Employee Master server-side. This trades Apps Script's own per-visitor
  * OAuth consent screen (which showed for every new user) for the same
@@ -27,9 +27,12 @@ const GRACE_MINUTES_DEFAULT = 15;
 // Shared secret with the static frontend (docs/js/config.js). Not a secret
 // in the cryptographic sense — it's visible in client JS, same as wiom-l2's
 // API_KEY — it just keeps this URL from being casually crawled/guessed;
-// real authorization is the @wiom.in domain + Employee Master check below.
+// real authorization is the allowed-domain + Employee Master check below.
 const API_KEY = 'wiom-pft-roster-2026';
-const ALLOWED_DOMAIN = 'wiom.in';
+// Wiom's product domain plus i2e1 (the parent company). This is the
+// authoritative check — docs/js/config.js has the matching list for the
+// client, but this one can't be bypassed by editing anything client-side.
+const ALLOWED_DOMAINS = ['wiom.in', 'i2e1.com'];
 
 function jsonOut_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -381,14 +384,20 @@ function isManager_(emp) {
   return /team\s*lead|manager/i.test(String(emp.designation || ''));
 }
 
+function isAllowedDomainEmail_(email) {
+  const lower = String(email || '').trim().toLowerCase();
+  return ALLOWED_DOMAINS.some(function (d) { return lower.endsWith('@' + d.toLowerCase()); });
+}
+
 // Identity now comes from the client (Firebase-authenticated email passed as
 // a request param), not Session.getActiveUser() — the deployment runs as
 // "Execute as: Me / Anyone" so there's no per-visitor Google account to read
-// server-side. Still verified against @wiom.in and Employee Master below.
+// server-side. Still verified against the allowed domains and Employee
+// Master below.
 function resolveEmployee_(email) {
   if (!email) return { error: 'Could not detect your signed-in email. Please sign in again.' };
-  if (!new RegExp('@' + ALLOWED_DOMAIN.replace('.', '\\.') + '$', 'i').test(String(email).trim())) {
-    return { error: 'Only @' + ALLOWED_DOMAIN + ' accounts are allowed.' };
+  if (!isAllowedDomainEmail_(email)) {
+    return { error: 'Only ' + ALLOWED_DOMAINS.map(function (d) { return '@' + d; }).join(' or ') + ' accounts are allowed.' };
   }
   const emp = findEmployeeByEmail_(email);
   if (!emp) return { error: 'Email ' + email + ' is not registered in Employee Master. Contact your admin.' };

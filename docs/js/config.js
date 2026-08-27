@@ -13,10 +13,16 @@ export const FIREBASE_CONFIG = {
 };
 
 export const CONFIG = {
-  ALLOWED_DOMAIN: "wiom.in",
+  // Wiom's product domain plus i2e1 (the parent company) — anyone signing
+  // in with either can pass the domain check. Google's own account-picker
+  // "hd" restriction only supports one domain at a time, so with two
+  // domains that picker-level filter is dropped; membership here is what
+  // actually enforces it, both client-side (auth.js) and again
+  // server-side (Code.gs) as the authoritative check.
+  ALLOWED_DOMAINS: ["wiom.in", "i2e1.com"],
   // Apps Script Web App URL — deployed as "Execute as: Me" / "Anyone", so it
   // never shows the visitor a Google consent screen. Access control is the
-  // API_KEY below plus the @wiom.in + Employee Master check done server-side.
+  // API_KEY below plus the allowed-domain + Employee Master check done server-side.
   API_URL: "https://script.google.com/macros/s/AKfycbz1HM_Ud45vJh_6LjWkwKHOore8igJIj95k98a9pihWsLwXo-BF69MoYoZHDGTgtO5b/exec",
   API_KEY: "wiom-pft-roster-2026"
 };

@@ -171,4 +171,16 @@ t('shiftDisplayCode_: shift code, no log row, today/future -> raw shift text unc
   assertEq(sandbox.shiftDisplayCode_('10-7', null, false), '10-7');
 });
 
+// ---- isAllowedDomainEmail_ (multi-domain sign-in: wiom.in + i2e1.com) ----
+t('isAllowedDomainEmail_: accepts either allowed domain, case-insensitively', () => {
+  assertEq(sandbox.isAllowedDomainEmail_('manas.sibal@wiom.in'), true);
+  assertEq(sandbox.isAllowedDomainEmail_('Deepakshi.Agarwal@I2E1.COM'), true);
+});
+t('isAllowedDomainEmail_: rejects everything else, including near-miss domains', () => {
+  assertEq(sandbox.isAllowedDomainEmail_('someone@gmail.com'), false);
+  assertEq(sandbox.isAllowedDomainEmail_('someone@notwiom.in'), false);
+  assertEq(sandbox.isAllowedDomainEmail_('someone@wiom.in.evil.com'), false);
+  assertEq(sandbox.isAllowedDomainEmail_(''), false);
+});
+
 console.log('done');

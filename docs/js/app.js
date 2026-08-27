@@ -1,5 +1,8 @@
 import { onAuthReady, signIn, signOutUser } from './auth.js';
 import { api } from './db.js';
+import { CONFIG } from './config.js';
+
+const ALLOWED_DOMAINS_TEXT = CONFIG.ALLOWED_DOMAINS.map(function (d) { return '@' + d; }).join(' or ');
 
 // Applied immediately (before first render) so the page never flashes the
 // wrong theme on load.
@@ -131,7 +134,7 @@ function renderSignIn(errorMsg) {
     '<div class="sub">Wiom &middot; Partner Follow-up Team</div>' +
     (errorMsg ? '<div class="status err" style="margin:16px 0;">' + errorMsg + '</div>' : '') +
     '<button id="signInBtn" class="btn-in" style="margin-top:20px;">Sign in with Google</button>' +
-    '<div class="sub" style="margin-top:14px;">Only @wiom.in accounts are allowed</div>' +
+    '<div class="sub" style="margin-top:14px;">Only ' + ALLOWED_DOMAINS_TEXT + ' accounts are allowed</div>' +
     '</div></div>';
   document.getElementById('signInBtn').addEventListener('click', function () {
     signIn().catch(function (err) { renderSignIn(err.message); });
@@ -144,7 +147,7 @@ function boot() {
   onAuthReady(function (user, errorCode) {
     if (teamPollHandle) { clearInterval(teamPollHandle); teamPollHandle = null; }
     if (!user) {
-      renderSignIn(errorCode === 'unauthorized_domain' ? 'Only @wiom.in accounts are allowed.' : null);
+      renderSignIn(errorCode === 'unauthorized_domain' ? 'Only ' + ALLOWED_DOMAINS_TEXT + ' accounts are allowed.' : null);
       return;
     }
     CURRENT = user;
