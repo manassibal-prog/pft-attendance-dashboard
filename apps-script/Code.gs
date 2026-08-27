@@ -109,7 +109,7 @@ const ACTIONS = {
     if (res.error) throw new Error(res.error);
     const offset = Number(p.weekOffset || 0);
     const grid = getRosterGrid_();
-    const employees = listActiveEmployees_();
+    const employees = listActiveAdvisors_();
     const today = new Date();
     const dow = today.getDay();
     const mondayOffset = (dow === 0 ? -6 : 1 - dow) + offset * 7;
@@ -117,15 +117,15 @@ const ACTIONS = {
     const days = dateRangeInfo_(monday, 7);
     const todayKey = formatDdMmmYyyy_(today);
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const logIndex = dailyLogIndexForDates_(days.map(function (d) { return d.key; }));
+    const dateKeys = days.map(function (d) { return d.key; });
+    const logIndex = dailyLogIndexForDates_(dateKeys);
 
-    const rows = employees.map(function (e) {
+    const rows = rosterCodesForWeek_(grid, employees, dateKeys).map(function (r) {
       return {
-        empId: e.empId, name: e.name,
-        codes: days.map(function (d) {
-          const raw = rosterCodeForDate_(grid, e.name, d.key);
-          const logRow = logIndex[e.empId + '|' + d.key];
-          return shiftDisplayCode_(raw, logRow, d.date < todayMidnight) || '—';
+        empId: r.empId, name: r.name,
+        codes: r.codes.map(function (raw, i) {
+          const logRow = logIndex[r.empId + '|' + dateKeys[i]];
+          return shiftDisplayCode_(raw, logRow, days[i].date < todayMidnight) || '—';
         })
       };
     });
@@ -168,7 +168,7 @@ const ACTIONS = {
       if (!lastEventAt[empId] || ts > lastEventAt[empId]) lastEventAt[empId] = ts;
     }
 
-    const employees = listActiveEmployees_();
+    const employees = listActiveAdvisors_();
     const rosterGrid = getRosterGrid_();
 
     const results = employees.map(function (e) {
@@ -212,7 +212,7 @@ const ACTIONS = {
       if (Utilities.formatDate(new Date(r[0]), tz, 'yyyy-MM-dd') === targetDayStr) rowsByEmp[String(r[1])] = r;
     }
 
-    const employees = listActiveEmployees_();
+    const employees = listActiveAdvisors_();
     const rosterGrid = getRosterGrid_();
     const now = new Date();
     const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -419,15 +419,27 @@ function listActiveEmployees_() {
   const idCol = headers.indexOf('Emp ID');
   const nameCol = headers.indexOf('Employee Name');
   const deptCol = headers.indexOf('Department');
+  const designationCol = headers.indexOf('Designation');
   const weeklyOffCol = headers.indexOf('Weekly Off Day');
   const statusCol = headers.indexOf('Status');
   const out = [];
   for (let i = 1; i < data.length; i++) {
     if (!data[i][idCol]) continue;
     if (String(data[i][statusCol] || '').trim().toLowerCase() !== 'active') continue;
-    out.push({ empId: data[i][idCol], name: data[i][nameCol], department: data[i][deptCol], weeklyOff: data[i][weeklyOffCol] });
+    out.push({
+      empId: data[i][idCol], name: data[i][nameCol], department: data[i][deptCol],
+      designation: data[i][designationCol], weeklyOff: data[i][weeklyOffCol]
+    });
   }
   return out;
+}
+
+// Team Roster / Team Status / Day End Report / Monthly Summary only track
+// advisors actually doing punch/break work — managers never punch in, so
+// their row would just be dashes and zeroes everywhere. Filtered out here
+// once rather than in every caller.
+function listActiveAdvisors_() {
+  return listActiveEmployees_().filter(function (e) { return !isManager_(e); });
 }
 
 function parseShiftTime_(shiftStart, referenceDate) {
@@ -538,6 +550,56 @@ function rosterCodeForDate_(grid, employeeName, dateStr) {
   return code ? String(code).trim() : '';
 }
 
+// Same result as calling rosterCodeForDate_ once per (employee, day) pair,
+// but without redundantly re-scanning the whole grid for every one of
+// those calls: a week x team grid is employees.length x days.length
+// lookups (e.g. 11 x 7 = 77), and rosterCodeForDate_ alone does a full
+// grid scan (findTodayColumn_) plus a block scan (findEmployeeRow_) on
+// every single one of them — even though a date's column position doesn't
+// depend on which employee we're asking about, and a block's employee ->
+// row mapping doesn't depend on which day within that block we're asking
+// about. This scans for each date once and indexes each distinct block's
+// employee rows once, then every lookup after that is an object property
+// read. Went from a plain array.map to this after getTeamRoster started
+// timing out server-side once Daily Attendance Log/Roster had real
+// months of history behind them.
+function rosterCodesForWeek_(grid, employees, dateKeys) {
+  const colCache = {};
+  function columnFor(dateKey) {
+    if (!(dateKey in colCache)) colCache[dateKey] = findTodayColumn_(grid, dateKey);
+    return colCache[dateKey];
+  }
+  const rowIndexCache = {};
+  function rowIndexFor(headerRow) {
+    if (!(headerRow in rowIndexCache)) {
+      const idx = {};
+      for (let r = headerRow + 1; r < grid.length; r++) {
+        const row = grid[r] || [];
+        const name = row[1];
+        if (!name || String(name).trim() === '') break;
+        if (String(name).trim().toLowerCase() === 'name') break;
+        idx[String(name).trim().toLowerCase()] = r;
+      }
+      rowIndexCache[headerRow] = idx;
+    }
+    return rowIndexCache[headerRow];
+  }
+
+  return employees.map(function (e) {
+    const nameLower = String(e.name).trim().toLowerCase();
+    const codes = dateKeys.map(function (dateKey) {
+      const found = columnFor(dateKey);
+      if (!found) return '';
+      const rowIndex = rowIndexFor(found.headerRow);
+      const r = rowIndex[nameLower];
+      if (r === undefined) return '';
+      const code = grid[r][found.col];
+      return code ? String(code).trim() : '';
+    });
+    return { empId: e.empId, name: e.name, codes: codes };
+  });
+}
+
 const WEEKDAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function dateRangeInfo_(startDate, numDays) {
@@ -561,14 +623,16 @@ function parseYyyyMmDd_(s) {
   return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
 }
 
-// Roster carries actual shift assignments ("10-7" / "11-8") instead of a
-// plain P for some employees. The grid should show real attendance, not the
-// plan, so a shift code resolves to: P/HD once that day's Daily Attendance
-// Log row says whether they cleared 4.5 net working hours (still mid-shift,
-// i.e. punched in but no net hours yet -> tentatively P), UP if the day is
-// already over and they never punched in at all, or — for today/future,
-// where it's simply too early to know — the raw shift text unchanged.
-const SHIFT_CODE_RE = /^(10-7|11-8)$/;
+// Roster carries actual shift assignments ("10-7" / "11-8", however spaced
+// around the dash — the sheet actually has "10 - 7" / "11 - 8") instead of
+// a plain P for some employees. The grid should show real attendance, not
+// the plan, so a shift code resolves to: P/HD once that day's Daily
+// Attendance Log row says whether they cleared 4.5 net working hours
+// (still mid-shift, i.e. punched in but no net hours yet -> tentatively
+// P), UP if the day is already over and they never punched in at all, or
+// — for today/future, where it's simply too early to know — the raw
+// shift text unchanged.
+const SHIFT_CODE_RE = /^\s*(10\s*-\s*7|11\s*-\s*8)\s*$/;
 function shiftDisplayCode_(rawCode, dailyLogRow, isPastDate) {
   const trimmed = String(rawCode || '').trim();
   if (!SHIFT_CODE_RE.test(trimmed)) return trimmed;
@@ -759,7 +823,7 @@ function refreshMonthlySummary() {
   const logSh = ss.getSheetByName(SHEET_LOG);
   const sumSh = ss.getSheetByName(SHEET_SUMMARY);
 
-  const employees = listActiveEmployees_();
+  const employees = listActiveAdvisors_();
   const now = new Date();
   const tz = Session.getScriptTimeZone();
   const monthKey = Utilities.formatDate(now, tz, 'yyyy-MM');

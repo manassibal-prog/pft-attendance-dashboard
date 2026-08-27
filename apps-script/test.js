@@ -145,6 +145,21 @@ t('formatRangeLabel_ matches "17 Aug – 23 Aug 2026" style', () => {
   assertEq(sandbox.formatRangeLabel_(days), '17 Aug – 23 Aug 2026');
 });
 
+t('rosterCodesForWeek_ (batched/memoized) matches rosterCodeForDate_ (per-cell) exactly, across a block boundary', () => {
+  const dateKeys = ['18/Aug/2026', '19/Aug/2026', '01/Sep/2026', '02/Sep/2026'];
+  const employees = [{ empId: 'E1', name: 'Dhananjay' }, { empId: 'E2', name: 'Rohit' }];
+  const batched = sandbox.rosterCodesForWeek_(grid, employees, dateKeys);
+  const expected = employees.map((e) => ({
+    empId: e.empId, name: e.name,
+    codes: dateKeys.map((k) => sandbox.rosterCodeForDate_(grid, e.name, k))
+  }));
+  assertEq(batched, expected);
+  // Rohit only exists in the Aug block — must not pick up a stale row index
+  // from Dhananjay's Sep-block row when asked about Sep dates.
+  assertEq(batched[1].codes[2], '');
+  assertEq(batched[1].codes[3], '');
+});
+
 // ---- shiftDisplayCode_ (Roster shift codes "10-7"/"11-8" -> real P/HD/UP) ----
 const logRow = (netHours) => { const r = []; r[11] = netHours; return r; };
 
@@ -156,6 +171,10 @@ t('shiftDisplayCode_: non-shift codes pass through unchanged regardless of log/d
 t('shiftDisplayCode_: shift code with a completed day >= 4.5 net hours -> P', () => {
   assertEq(sandbox.shiftDisplayCode_('10-7', logRow(5), false), 'P');
   assertEq(sandbox.shiftDisplayCode_('11-8', logRow(4.5), true), 'P');
+});
+t('shiftDisplayCode_: recognizes the actual sheet format ("10 - 7" / "11 - 8", spaced around the dash)', () => {
+  assertEq(sandbox.shiftDisplayCode_('10 - 7', logRow(5), false), 'P');
+  assertEq(sandbox.shiftDisplayCode_('11 - 8', null, true), 'UP');
 });
 t('shiftDisplayCode_: shift code with a completed day < 4.5 net hours -> HD', () => {
   assertEq(sandbox.shiftDisplayCode_('10-7', logRow(4.49), false), 'HD');
@@ -181,6 +200,24 @@ t('isAllowedDomainEmail_: rejects everything else, including near-miss domains',
   assertEq(sandbox.isAllowedDomainEmail_('someone@notwiom.in'), false);
   assertEq(sandbox.isAllowedDomainEmail_('someone@wiom.in.evil.com'), false);
   assertEq(sandbox.isAllowedDomainEmail_(''), false);
+});
+
+// ---- isManager_ / listActiveAdvisors_ (managers excluded from Team Roster, Team Status, Day End Report, Monthly Summary) ----
+t('isManager_: matches "Team Leader" / "Manager" designations, case-insensitively, ignores others', () => {
+  assertEq(sandbox.isManager_({ designation: 'Team Leader' }), true);
+  assertEq(sandbox.isManager_({ designation: 'senior manager' }), true);
+  assertEq(sandbox.isManager_({ designation: 'Advisor' }), false);
+  assertEq(sandbox.isManager_({ designation: '' }), false);
+  assertEq(sandbox.isManager_({}), false);
+});
+t('listActiveAdvisors_ filters out managers, keeping only advisors', () => {
+  const employees = [
+    { empId: '1', name: 'Manas', designation: 'Team Leader' },
+    { empId: '2', name: 'Deepakshi', designation: 'Manager' },
+    { empId: '3', name: 'Vivek', designation: 'Advisor' }
+  ];
+  const advisorsOnly = employees.filter((e) => !sandbox.isManager_(e));
+  assertEq(advisorsOnly.map((e) => e.name), ['Vivek']);
 });
 
 console.log('done');
