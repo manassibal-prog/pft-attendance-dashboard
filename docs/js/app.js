@@ -16,6 +16,7 @@ let LOC_INFO = null;
 let STATE = { phase: 'not_started', breakType: null, punchIn: null, punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, rosterCode: '', requiresGeofence: true };
 let ACTIVE_TAB = 'me';
 let TEAM = null;
+let TEAM_ERROR = null;
 let TEAM_ROSTER = null;
 let TEAM_ROSTER_OFFSET = 0;
 let RECENT_LOG = null;
@@ -388,10 +389,17 @@ function renderTeam() {
   // 2. Day summary heading + live status.
   html += '<div class="section-heading">Today’s Summary</div>';
   html += '<div class="card"><h1><span class="live-dot"></span>Team Status</h1>';
-  if (!TEAM) {
+  if (!TEAM && TEAM_ERROR) {
+    // No data at all yet (e.g. first load failed) — this is the only case
+    // that gets an error where data would be, since there's nothing else
+    // to show. A failed refresh once TEAM already has something stays
+    // silent below instead, rather than replacing good data with an error.
+    html += '<div class="status err">' + TEAM_ERROR + '</div>';
+  } else if (!TEAM) {
     html += '<div class="loading">Loading…</div>';
   } else {
-    html += '<div class="sub">Live &middot; updates every 20s &middot; as of ' + new Date(TEAM.asOf).toLocaleTimeString() + '</div>';
+    html += '<div class="sub">Live &middot; updates every 20s &middot; as of ' + new Date(TEAM.asOf).toLocaleTimeString() +
+      (TEAM_ERROR ? ' &middot; <span style="color:var(--red);">last refresh failed, showing previous data</span>' : '') + '</div>';
     TEAM.employees.forEach(function (e) {
       const cls = 'st-' + String(e.status || '').replace(/\s+/g, '');
       const since = (LIVE_STATUSES.indexOf(e.status) > -1 && e.statusSince) ? ' &middot; since ' + fmtTime(e.statusSince) : '';
@@ -463,10 +471,15 @@ function loadDayEndReport() {
 
 function loadTeam() {
   api({ action: 'getTeamStatus', email: CURRENT.email })
-    .then(function (t) { TEAM = t; renderTeam(); })
+    .then(function (t) { TEAM = t; TEAM_ERROR = null; renderTeam(); })
     .catch(function (err) {
-      const body = document.getElementById('tabBody');
-      if (body && ACTIVE_TAB === 'team') body.innerHTML = '<div class="card status err">' + err.message + '</div>';
+      // A failed poll (transient Apps Script hiccup, timeout, etc.) only
+      // ever affects the Team Status card's own content — never wipe the
+      // roster grid / Day End Report / Recent Activity that are already
+      // showing, and never blank the whole tab over one bad poll out of
+      // every 20s.
+      TEAM_ERROR = err.message;
+      renderTeam();
     });
   api({ action: 'getRecentLog', email: CURRENT.email, limit: 30 })
     .then(function (log) { RECENT_LOG = log; renderTeam(); })
