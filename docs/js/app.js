@@ -34,6 +34,18 @@ const BREAK_LABEL = { LUNCH: 'Lunch Break', TEA: 'Tea Break', BIO: 'Bio Break' }
 const EVENT_DOT = { PUNCH_IN: 'ed-in', PUNCH_OUT: 'ed-out', LUNCH_START: 'ed-start', TEA_START: 'ed-start', BIO_START: 'ed-start', LUNCH_END: 'ed-end', TEA_END: 'ed-end', BIO_END: 'ed-end' };
 const LIVE_STATUSES = ['Working', 'Lunch Break', 'Tea Break', 'Bio Break'];
 
+// Team Status row order: Working first, then Present, then anyone on a
+// break, then everything else (Late, Half Day, WO, Holiday, Not Started,
+// roster codes, …) in whatever order the server returned it — sort() is
+// stable, so ties don't get reshuffled on every 20s poll.
+const STATUS_SORT_RANK = { Working: 0, Present: 1, 'Lunch Break': 2, 'Tea Break': 2, 'Bio Break': 2 };
+function statusSortRank_(status) {
+  return Object.prototype.hasOwnProperty.call(STATUS_SORT_RANK, status) ? STATUS_SORT_RANK[status] : 3;
+}
+function sortByStatus_(employees) {
+  return employees.slice().sort(function (a, b) { return statusSortRank_(a.status) - statusSortRank_(b.status); });
+}
+
 function rosterCodeClass(code) {
   const c = String(code || '').trim();
   if (c === 'P') return 'rc-P';
@@ -471,7 +483,7 @@ function loadDayEndReport() {
 
 function loadTeam() {
   api({ action: 'getTeamStatus', email: CURRENT.email })
-    .then(function (t) { TEAM = t; TEAM_ERROR = null; renderTeam(); })
+    .then(function (t) { TEAM = Object.assign({}, t, { employees: sortByStatus_(t.employees) }); TEAM_ERROR = null; renderTeam(); })
     .catch(function (err) {
       // A failed poll (transient Apps Script hiccup, timeout, etc.) only
       // ever affects the Team Status card's own content — never wipe the
