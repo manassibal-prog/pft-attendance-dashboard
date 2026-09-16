@@ -46,6 +46,16 @@ function sortByStatus_(employees) {
   return employees.slice().sort(function (a, b) { return statusSortRank_(a.status) - statusSortRank_(b.status); });
 }
 
+// Day End Report row order: Present, then Late, then WO, then L, then
+// everything else (Half Day, UP, Holiday, Absent, Not Started, …).
+const DAY_END_SORT_RANK = { Present: 0, Late: 1, WO: 2, L: 3 };
+function dayEndSortRank_(status) {
+  return Object.prototype.hasOwnProperty.call(DAY_END_SORT_RANK, status) ? DAY_END_SORT_RANK[status] : 4;
+}
+function sortByDayEndStatus_(employees) {
+  return employees.slice().sort(function (a, b) { return dayEndSortRank_(a.status) - dayEndSortRank_(b.status); });
+}
+
 function rosterCodeClass(code) {
   const c = String(code || '').trim();
   if (c === 'P') return 'rc-P';
@@ -477,7 +487,7 @@ function loadDayEndReport() {
   DAY_REPORT = null;
   renderTeam();
   api({ action: 'getDayEndReport', email: CURRENT.email, date: DAY_REPORT_DATE })
-    .then(function (r) { DAY_REPORT = r; renderTeam(); })
+    .then(function (r) { DAY_REPORT = Object.assign({}, r, { employees: sortByDayEndStatus_(r.employees) }); renderTeam(); })
     .catch(function () { /* non-fatal — rest of the tab still shows */ });
 }
 
