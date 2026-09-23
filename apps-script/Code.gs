@@ -73,6 +73,17 @@ const ACTIONS = {
       const now = new Date();
       const eventsLog = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
 
+      // Advisors mark attendance from a laptop/desktop only (company policy,
+      // not a security boundary) — docs/js/app.js already hides the punch UI
+      // on a phone/tablet and sends this flag, but that client check alone
+      // is skippable, so it's re-checked here too. Like the email param,
+      // `device` is self-reported by the caller and not cryptographically
+      // provable; this catches the casual case, not a determined spoof.
+      if (String(p.device || '').toLowerCase() === 'mobile') {
+        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, '', '', 'Blocked - mobile device']);
+        throw new Error('Attendance can only be marked from a laptop or desktop browser, not a phone or tablet.');
+      }
+
       const todayEvents = getTodayEvents_(emp.empId);
       const state = computeDayState_(todayEvents);
 

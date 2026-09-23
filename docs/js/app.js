@@ -4,6 +4,22 @@ import { CONFIG } from './config.js';
 
 const ALLOWED_DOMAINS_TEXT = CONFIG.ALLOWED_DOMAINS.map(function (d) { return '@' + d; }).join(' or ');
 
+// Advisors mark attendance from a laptop/desktop only — phones and tablets
+// are turned away here (onUser) before the punch UI ever renders, and
+// recordEvent is checked again server-side (Code.gs) so someone can't just
+// disable JS or hand-craft the request. Like the email param elsewhere in
+// this app, the device signal is self-reported by the client and not
+// cryptographically provable — this stops the casual "just punch in from my
+// phone" case, not a determined spoof. iPadOS reports a desktop Safari user
+// agent by default, which is why this also checks for a coarse (touch)
+// primary pointer rather than relying on the user agent string alone.
+const MOBILE_UA_RE = /Android|iPhone|iPad|iPod|Mobile|Tablet/i;
+function isMobileOrTablet_() {
+  const uaMatch = MOBILE_UA_RE.test(navigator.userAgent);
+  const coarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  return uaMatch || coarsePointer;
+}
+
 // Applied immediately (before first render) so the page never flashes the
 // wrong theme on load.
 document.documentElement.setAttribute('data-theme', localStorage.getItem('pft-theme') || 'dark');
@@ -188,6 +204,15 @@ function onFatal(err) {
     '<div class="card"><h1>Something went wrong</h1><div class="status err">' + err.message + '</div></div>';
 }
 
+function renderMobileBlocked() {
+  document.getElementById('app').innerHTML =
+    '<div class="narrow"><div class="card" style="text-align:center;padding:44px 24px;">' +
+    '<div class="brand-mark" style="width:56px;height:56px;font-size:28px;margin:0 auto 18px;">W</div>' +
+    '<h1 style="margin-bottom:6px;">Use a laptop to continue</h1>' +
+    '<div class="sub">Attendance can only be marked from a laptop or desktop browser &mdash; not a phone or tablet.</div>' +
+    '</div></div>';
+}
+
 function onUser(res) {
   if (res.error) {
     document.getElementById('appbarRight').innerHTML = renderThemeToggle();
@@ -209,6 +234,10 @@ function onUser(res) {
     renderThemeToggle();
   document.getElementById('signOutLink').addEventListener('click', function (e) { e.preventDefault(); signOutUser(); });
   wireThemeToggle();
+  if (!IS_MANAGER && isMobileOrTablet_()) {
+    renderMobileBlocked();
+    return;
+  }
   renderShell();
   if (!IS_MANAGER) {
     refreshDayState();
@@ -378,7 +407,7 @@ function startBreakTimer_() {
 
 function onAction(type) {
   document.querySelectorAll('[data-type]').forEach(function (el) { el.classList.add('pending'); });
-  api({ action: 'recordEvent', email: CURRENT.email, type: type, lat: LAST_LOC ? LAST_LOC.lat : '', lng: LAST_LOC ? LAST_LOC.lng : '' })
+  api({ action: 'recordEvent', email: CURRENT.email, type: type, lat: LAST_LOC ? LAST_LOC.lat : '', lng: LAST_LOC ? LAST_LOC.lng : '', device: isMobileOrTablet_() ? 'mobile' : 'desktop' })
     .then(function (res) {
       if (res.success) {
         STATE = Object.assign({}, res.state, { rosterCode: res.rosterCode, requiresGeofence: res.requiresGeofence });
