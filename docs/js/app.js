@@ -1,6 +1,7 @@
 import { onAuthReady, signIn, signOutUser } from './auth.js';
 import { api } from './db.js';
 import { CONFIG } from './config.js';
+import { cacheGet, cacheSet, cacheClearAll, localDay } from './cache.js';
 
 const ALLOWED_DOMAINS_TEXT = CONFIG.ALLOWED_DOMAINS.map(function (d) { return '@' + d; }).join(' or ');
 
@@ -29,17 +30,30 @@ let EMP = null;
 let IS_MANAGER = false;
 let LAST_LOC = null;
 let LOC_INFO = null;
-let STATE = { phase: 'not_started', breakType: null, punchIn: null, punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, rosterCode: '', requiresGeofence: true };
-// STATE above is only a placeholder until getDayState answers. The advisor
-// screen can now paint before that (cached sign-in), so tiles stay disabled
-// until STATE_LOADED rather than offering "Punch In" on a guess.
+function freshState_() {
+  return { phase: 'not_started', breakType: null, punchIn: null, punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, breakStartedAt: null, rosterCode: '', requiresGeofence: true };
+}
+let STATE = freshState_();
+// STATE above is only a placeholder until getDayState answers (or a saved
+// copy from earlier today is painted). The advisor screen paints before that
+// (cached sign-in), so tiles stay disabled until STATE_LOADED rather than
+// offering "Punch In" on a guess.
 let STATE_LOADED = false;
 let STATE_LOAD_ERROR = null;
+// True from the moment a punch/break tap is sent until the server answers.
+// The screen already shows the expected result; further taps wait so two
+// requests can't reach the server out of order.
+let ACTION_IN_FLIGHT = false;
 let ACTIVE_TAB = 'me';
 let TEAM = null;
 let TEAM_ERROR = null;
 let TEAM_ROSTER = null;
 let TEAM_ROSTER_OFFSET = 0;
+// Whether TEAM_ROSTER came from the server this session (vs a saved copy
+// painted first); until it has, every poll keeps trying to fetch a fresh one.
+let TEAM_ROSTER_FRESH = false;
+// TEAM is a saved copy until the first live poll lands.
+let TEAM_STALE = false;
 let RECENT_LOG = null;
 let teamPollHandle = null;
 const TEAM_POLL_MS = 20000;
@@ -195,16 +209,48 @@ function boot() {
   onAuthReady(function (user, errorCode) {
     stopTeamPolling_();
     userLoadSeq++;
-    STATE_LOADED = false;
-    STATE_LOAD_ERROR = null;
+    resetSessionData_();
     if (!user) {
       clearCachedUsers_();
+      cacheClearAll();
       renderSignIn(errorCode === 'unauthorized_domain' ? 'Only ' + ALLOWED_DOMAINS_TEXT + ' accounts are allowed.' : null);
       return;
     }
     CURRENT = user;
     loadCurrentUser();
   });
+}
+
+// Everything loaded for one signed-in person; cleared on every auth change so
+// a sign-out → sign-in as someone else in the same tab starts clean.
+function resetSessionData_() {
+  TEAM = null; TEAM_STALE = false; TEAM_ERROR = null; RECENT_LOG = null;
+  TEAM_ROSTER = null; TEAM_ROSTER_FRESH = false; DAY_REPORT = null;
+  STATE = freshState_(); STATE_LOADED = false; STATE_LOAD_ERROR = null;
+  ACTION_IN_FLIGHT = false;
+}
+
+// Paints the last-seen data before the live requests answer. Only fills what
+// isn't loaded yet, so a second onUser (cached → fresh sign-in) can't put a
+// saved copy over data that has since arrived.
+function hydrateFromCache_() {
+  const email = CURRENT.email;
+  if (IS_MANAGER) {
+    if (!TEAM) { const t = cacheGet(email, 'team'); if (t) { TEAM = t; TEAM_STALE = true; } }
+    if (!RECENT_LOG) RECENT_LOG = cacheGet(email, 'recent');
+    if (!DAY_REPORT) DAY_REPORT = cacheGet(email, 'dayreport:' + DAY_REPORT_DATE, reportCacheValid_(DAY_REPORT_DATE));
+  } else if (!STATE_LOADED) {
+    const s = cacheGet(email, 'daystate');
+    if (s) { STATE = s; STATE_LOADED = true; STATE_LOAD_ERROR = null; }
+  }
+  if (!TEAM_ROSTER) TEAM_ROSTER = cacheGet(email, 'roster:' + TEAM_ROSTER_OFFSET);
+}
+
+// A saved Day End Report is trustworthy to paint if it's today's report saved
+// today (still filling in, refreshed right after), or any report saved after
+// its own day ended (final). A past date saved mid-day is incomplete.
+function reportCacheValid_(date) {
+  return function (entry) { return (date === localDay() && entry.day === localDay()) || entry.day > date; };
 }
 
 // Stale-while-revalidate sign-in. A returning user's last successful
@@ -306,6 +352,7 @@ function onUser(res) {
     renderMobileBlocked();
     return;
   }
+  hydrateFromCache_();
   renderShell();
   if (!IS_MANAGER) {
     refreshDayState();
@@ -314,11 +361,17 @@ function onUser(res) {
   }
 }
 
-function refreshDayState(afterMsg) {
+// afterMsg: shown once the fresh state has loaded. failMsg: shown instead if
+// that re-check itself fails (defaults to afterMsg, or the raw error).
+function refreshDayState(afterMsg, failMsg) {
   api({ action: 'getDayState', email: CURRENT.email }).then(function (s) {
+    // A tap is mid-flight: this answer predates it and would flicker the
+    // screen back; the tap's own response is the newer truth.
+    if (ACTION_IN_FLIGHT) return;
     STATE = s;
     STATE_LOADED = true;
     STATE_LOAD_ERROR = null;
+    cacheSet(CURRENT.email, 'daystate', STATE);
     renderMe();
     if (afterMsg) {
       const msg = document.getElementById('msg');
@@ -328,7 +381,7 @@ function refreshDayState(afterMsg) {
     if (STATE_LOADED) {
       // A real status is already on screen; a failed re-check shouldn't blank it.
       const msg = document.getElementById('msg');
-      if (msg) msg.innerHTML = afterMsg || '<div class="status err">' + err.message + '</div>';
+      if (msg) msg.innerHTML = failMsg || afterMsg || '<div class="status err">' + err.message + '</div>';
       return;
     }
     STATE_LOAD_ERROR = err.message;
@@ -387,7 +440,13 @@ function renderMe() {
   }[STATE.phase];
   const phaseClass = !STATE_LOADED ? 'phase-idle' : { not_started: 'phase-idle', working: 'phase-working', on_break: 'phase-break', completed: 'phase-done' }[STATE.phase];
 
-  const canAct = STATE_LOADED && (!requiresGeofence || (LOC_INFO && !LOC_INFO.error && LOC_INFO.within));
+  // The server re-checks the geofence on every punch, so this is only a
+  // convenience gate: block as soon as we know we're outside (or can't get a
+  // location), but once there's a GPS fix don't make the person wait on the
+  // checkLocation round-trip before the tiles come alive.
+  const locOk = LOC_INFO ? (!LOC_INFO.error && LOC_INFO.within) : !!LAST_LOC;
+  const inRange = !requiresGeofence || locOk;
+  const canAct = STATE_LOADED && inRange && !ACTION_IN_FLIGHT;
 
   html += '<div class="card">';
   html += '<div class="phasebar ' + phaseClass + '">' + phaseText + '</div>';
@@ -401,11 +460,13 @@ function renderMe() {
     '<span class="stat-value" id="tile-TOTAL-BREAK">' + renderTotalBreakValue_() + '</span></div>';
   html += '</div>';
 
-  if (!STATE_LOADED) {
+  if (ACTION_IN_FLIGHT) {
+    html += '<div class="status info">Saving your punch… keep this page open until it says Recorded.</div>';
+  } else if (!STATE_LOADED) {
     if (STATE_LOAD_ERROR) html += '<div class="status err">' + STATE_LOAD_ERROR + '</div><button id="stateRetryBtn" class="btn-in" style="margin-top:14px;">Try again</button>';
   } else if (STATE.phase === 'completed') {
     html += '<div class="status ok">You have completed attendance for today.</div>';
-  } else if (!canAct) {
+  } else if (!inRange) {
     html += '<div class="status err">You must be within office range to punch in/out or take a break.</div>';
   }
   html += '<div id="msg"></div></div>';
@@ -487,29 +548,72 @@ function startBreakTimer_() {
   }
 }
 
+// What getDayState would return right after `type` succeeds — mirrors
+// computeDayState_ in Code.gs for a single event. Only ever shown until the
+// server's own answer replaces it.
+function predictState_(s, type, now) {
+  const next = Object.assign({}, s, { breakTotals: Object.assign({}, s.breakTotals) });
+  const iso = now.toISOString();
+  if (type === 'PUNCH_IN') {
+    next.phase = 'working'; next.punchIn = iso;
+  } else if (type === 'PUNCH_OUT') {
+    next.phase = 'completed'; next.punchOut = iso;
+  } else if (/_START$/.test(type)) {
+    next.phase = 'on_break'; next.breakType = type.split('_')[0]; next.breakStartedAt = iso;
+  } else if (/_END$/.test(type)) {
+    const bt = type.split('_')[0];
+    if (s.breakStartedAt) next.breakTotals[bt] = (next.breakTotals[bt] || 0) + (now - new Date(s.breakStartedAt)) / 60000;
+    next.phase = 'working'; next.breakType = null; next.breakStartedAt = null;
+  }
+  return next;
+}
+
+// Optimistic: the tap shows its result at once and the request confirms it in
+// the background (the endpoint can take tens of seconds). If the server says
+// no, or the answer never arrives, the screen goes back to what it was and
+// then re-reads the truth from the server — a timed-out write may well have
+// gone through, so "never arrived" is not "didn't happen".
 function onAction(type) {
-  document.querySelectorAll('[data-type]').forEach(function (el) { el.classList.add('pending'); });
+  if (ACTION_IN_FLIGHT) return;
+  const before = STATE;
+  ACTION_IN_FLIGHT = true;
+  STATE = predictState_(before, type, new Date());
+  renderMe();
   api({ action: 'recordEvent', email: CURRENT.email, type: type, lat: LAST_LOC ? LAST_LOC.lat : '', lng: LAST_LOC ? LAST_LOC.lng : '', device: isMobileOrTablet_() ? 'mobile' : 'desktop' })
     .then(function (res) {
+      ACTION_IN_FLIGHT = false;
       if (res.success) {
         STATE = Object.assign({}, res.state, { rosterCode: res.rosterCode, requiresGeofence: res.requiresGeofence });
+        cacheSet(CURRENT.email, 'daystate', STATE);
         renderMe();
         const msg = document.getElementById('msg');
         if (msg) msg.innerHTML = '<div class="status ok">Recorded at ' + res.time + '.</div>';
       } else {
-        // A rejection here means our local STATE disagreed with the server
-        // about what's valid right now — trust the server, not our stale
-        // guess, so the screen can't get stuck out of sync with it.
+        // Rejected (outside the geofence, wrong order, …): nothing was
+        // recorded. Undo the guess, then trust the server over our local state.
+        STATE = before;
+        renderMe();
         refreshDayState('<div class="status err">' + res.message + '</div>');
       }
     })
     .catch(function (err) {
-      // Timed out / network error: the write may well have gone through on
-      // the server even though this response never arrived — always
-      // reconcile with getDayState rather than assume nothing happened.
-      refreshDayState('<div class="status err">' + err.message + '</div>');
+      ACTION_IN_FLIGHT = false;
+      STATE = before;
+      renderMe();
+      refreshDayState(
+        '<div class="status err">' + err.message + ' &mdash; showing your latest status from the server.</div>',
+        '<div class="status err">' + err.message + ' &mdash; we couldn’t confirm whether that was recorded. Check your connection and refresh the page.</div>'
+      );
     });
 }
+
+// Leaving mid-save could cancel the request, and the screen has already told
+// the person it worked — so make them confirm.
+window.addEventListener('beforeunload', function (e) {
+  if (!ACTION_IN_FLIGHT) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 function renderTeam() {
   if (ACTIVE_TAB !== 'team') return;
@@ -532,7 +636,8 @@ function renderTeam() {
     html += '<div class="loading">Loading…</div>';
   } else {
     html += '<div class="sub">Live &middot; updates every 20s &middot; as of ' + new Date(TEAM.asOf).toLocaleTimeString() +
-      (TEAM_ERROR ? ' &middot; <span style="color:var(--red);">last refresh failed, showing previous data</span>' : '') + '</div>';
+      (TEAM_ERROR ? ' &middot; <span style="color:var(--red);">last refresh failed, showing previous data</span>'
+        : TEAM_STALE ? ' &middot; saved copy, refreshing…' : '') + '</div>';
     TEAM.employees.forEach(function (e) {
       const cls = 'st-' + String(e.status || '').replace(/\s+/g, '');
       const since = (LIVE_STATUSES.indexOf(e.status) > -1 && e.statusSince) ? ' &middot; since ' + fmtTime(e.statusSince) : '';
@@ -586,11 +691,22 @@ function renderTeam() {
   if (reportTodayBtn) reportTodayBtn.addEventListener('click', function () { DAY_REPORT_DATE = todayYyyyMmDd_(); loadDayEndReport(); });
 }
 
+// Shows this week's saved copy straight away if there is one (or a blank
+// "Loading…" if not), then replaces it with the live answer.
 function loadTeamRoster() {
-  TEAM_ROSTER = null;
+  const offset = TEAM_ROSTER_OFFSET;
+  const email = CURRENT.email;
+  TEAM_ROSTER = cacheGet(email, 'roster:' + offset);
+  TEAM_ROSTER_FRESH = false;
   renderActive();
-  api({ action: 'getTeamRoster', email: CURRENT.email, weekOffset: TEAM_ROSTER_OFFSET })
-    .then(function (r) { TEAM_ROSTER = r; renderActive(); })
+  return api({ action: 'getTeamRoster', email: email, weekOffset: offset })
+    .then(function (r) {
+      cacheSet(email, 'roster:' + offset, r);
+      if (offset !== TEAM_ROSTER_OFFSET) return; // they've paged to another week since
+      TEAM_ROSTER = r;
+      TEAM_ROSTER_FRESH = true;
+      renderActive();
+    })
     .catch(function () { /* non-fatal — rest of the tab still shows */ });
 }
 
@@ -599,14 +715,17 @@ function loadTeamRoster() {
 // every cycle (which also hid the report entirely whenever a poll was slow).
 // Date changes still blank it, since the old rows belong to another day.
 function loadDayEndReport(silent) {
+  const email = CURRENT.email;
   if (!silent) {
-    DAY_REPORT = null;
+    DAY_REPORT = cacheGet(email, 'dayreport:' + DAY_REPORT_DATE, reportCacheValid_(DAY_REPORT_DATE));
     renderTeam();
   }
-  return api({ action: 'getDayEndReport', email: CURRENT.email, date: DAY_REPORT_DATE })
+  return api({ action: 'getDayEndReport', email: email, date: DAY_REPORT_DATE })
     .then(function (r) {
+      const report = Object.assign({}, r, { employees: sortByDayEndStatus_(r.employees) });
+      cacheSet(email, 'dayreport:' + r.date, report);
       if (r.date !== DAY_REPORT_DATE) return; // reply for a date the user has since navigated away from
-      DAY_REPORT = Object.assign({}, r, { employees: sortByDayEndStatus_(r.employees) });
+      DAY_REPORT = report;
       renderTeam();
     })
     .catch(function () { /* non-fatal — rest of the tab still shows */ });
@@ -616,8 +735,15 @@ function loadDayEndReport(silent) {
 // so the poller below can wait for the cycle to finish before scheduling the next.
 function loadTeam() {
   const jobs = [];
-  jobs.push(api({ action: 'getTeamStatus', email: CURRENT.email })
-    .then(function (t) { TEAM = Object.assign({}, t, { employees: sortByStatus_(t.employees) }); TEAM_ERROR = null; renderTeam(); })
+  const email = CURRENT.email;
+  jobs.push(api({ action: 'getTeamStatus', email: email })
+    .then(function (t) {
+      TEAM = Object.assign({}, t, { employees: sortByStatus_(t.employees) });
+      TEAM_STALE = false;
+      TEAM_ERROR = null;
+      cacheSet(email, 'team', TEAM);
+      renderTeam();
+    })
     .catch(function (err) {
       // A failed poll (transient Apps Script hiccup, timeout, etc.) only
       // ever affects the Team Status card's own content — never wipe the
@@ -627,13 +753,14 @@ function loadTeam() {
       TEAM_ERROR = err.message;
       renderTeam();
     }));
-  jobs.push(api({ action: 'getRecentLog', email: CURRENT.email, limit: 30 })
-    .then(function (log) { RECENT_LOG = log; renderTeam(); })
+  jobs.push(api({ action: 'getRecentLog', email: email, limit: 30 })
+    .then(function (log) { RECENT_LOG = log; cacheSet(email, 'recent', log); renderTeam(); })
     .catch(function () { /* non-fatal — Team Status card still shows */ }));
   // Roster rarely changes within a session — fetch once per tab visit, not
-  // on every 20s poll like the live status/log above. Nav clicks (loadTeamRoster)
-  // fetch on demand separately.
-  if (!TEAM_ROSTER) loadTeamRoster();
+  // on every 20s poll like the live status/log above (a saved copy painted
+  // first doesn't count as fetched). Nav clicks (loadTeamRoster) fetch on
+  // demand separately.
+  if (!TEAM_ROSTER_FRESH) loadTeamRoster();
   // Same for the Day End Report: refresh on every poll only while looking at
   // today (still filling in); a past date is already final, no need to re-fetch.
   if (!DAY_REPORT || DAY_REPORT_DATE === todayYyyyMmDd_()) jobs.push(loadDayEndReport(!!DAY_REPORT));
