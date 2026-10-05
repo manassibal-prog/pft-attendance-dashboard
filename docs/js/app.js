@@ -30,6 +30,11 @@ let IS_MANAGER = false;
 let LAST_LOC = null;
 let LOC_INFO = null;
 let STATE = { phase: 'not_started', breakType: null, punchIn: null, punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, rosterCode: '', requiresGeofence: true };
+// STATE above is only a placeholder until getDayState answers. The advisor
+// screen can now paint before that (cached sign-in), so tiles stay disabled
+// until STATE_LOADED rather than offering "Punch In" on a guess.
+let STATE_LOADED = false;
+let STATE_LOAD_ERROR = null;
 let ACTIVE_TAB = 'me';
 let TEAM = null;
 let TEAM_ERROR = null;
@@ -189,7 +194,11 @@ function boot() {
   startClock();
   onAuthReady(function (user, errorCode) {
     stopTeamPolling_();
+    userLoadSeq++;
+    STATE_LOADED = false;
+    STATE_LOAD_ERROR = null;
     if (!user) {
+      clearCachedUsers_();
       renderSignIn(errorCode === 'unauthorized_domain' ? 'Only ' + ALLOWED_DOMAINS_TEXT + ' accounts are allowed.' : null);
       return;
     }
@@ -198,9 +207,59 @@ function boot() {
   });
 }
 
+// Stale-while-revalidate sign-in. A returning user's last successful
+// getCurrentUser answer is painted immediately and re-checked in the
+// background, so the app opens at once even when the Apps Script endpoint
+// takes tens of seconds (or fails) to answer. The cache only shapes the first
+// paint — the server still authorises every action on every request — and it
+// is wiped on sign-out. Errors are never cached.
+const USER_CACHE_PREFIX = 'pft-user:';
+const USER_CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+let userLoadSeq = 0; // bumped on every sign-in/out so a late reply can't paint over a newer state
+
+function userCacheKey_(email) { return USER_CACHE_PREFIX + String(email).trim().toLowerCase(); }
+function readCachedUser_(email) {
+  try {
+    const v = JSON.parse(localStorage.getItem(userCacheKey_(email)));
+    if (!v || !v.res || !v.res.emp || !(Date.now() - v.at < USER_CACHE_MAX_AGE_MS)) return null;
+    return v.res;
+  } catch (_) { return null; }
+}
+function writeCachedUser_(email, res) {
+  try { localStorage.setItem(userCacheKey_(email), JSON.stringify({ at: Date.now(), res: res })); } catch (_) { /* storage blocked/full: just no cache */ }
+}
+function clearCachedUser_(email) {
+  try { localStorage.removeItem(userCacheKey_(email)); } catch (_) {}
+}
+function clearCachedUsers_() {
+  try {
+    Object.keys(localStorage).filter(function (k) { return k.indexOf(USER_CACHE_PREFIX) === 0; })
+      .forEach(function (k) { localStorage.removeItem(k); });
+  } catch (_) {}
+}
+function sameUser_(a, b) {
+  return JSON.stringify([a.emp, !!a.isManager]) === JSON.stringify([b.emp, !!b.isManager]);
+}
+
 function loadCurrentUser() {
-  document.getElementById('app').innerHTML = '<div class="loading">Loading…</div>';
-  api({ action: 'getCurrentUser', email: CURRENT.email }).then(onUser).catch(onFatal);
+  const seq = ++userLoadSeq;
+  const email = CURRENT.email;
+  const cached = readCachedUser_(email);
+  if (cached) onUser(cached);
+  else document.getElementById('app').innerHTML = '<div class="loading">Loading…</div>';
+
+  api({ action: 'getCurrentUser', email: email })
+    .then(function (res) {
+      if (seq !== userLoadSeq) return;
+      if (res.error) clearCachedUser_(email); else writeCachedUser_(email, res);
+      if (cached && !res.error && sameUser_(cached, res)) return; // already showing exactly this
+      onUser(res);
+    })
+    .catch(function (err) {
+      if (seq !== userLoadSeq) return;
+      if (cached) return; // keep the cached screen; each part of it reports its own failures
+      onFatal(err);
+    });
 }
 
 function onFatal(err) {
@@ -220,6 +279,9 @@ function renderMobileBlocked() {
 }
 
 function onUser(res) {
+  // onUser can now run twice for one sign-in (cached answer, then the fresh
+  // one); if the role changed between them, the old role's poller must go.
+  stopTeamPolling_();
   if (res.error) {
     document.getElementById('appbarRight').innerHTML = renderThemeToggle();
     wireThemeToggle();
@@ -255,11 +317,22 @@ function onUser(res) {
 function refreshDayState(afterMsg) {
   api({ action: 'getDayState', email: CURRENT.email }).then(function (s) {
     STATE = s;
+    STATE_LOADED = true;
+    STATE_LOAD_ERROR = null;
     renderMe();
     if (afterMsg) {
       const msg = document.getElementById('msg');
       if (msg) msg.innerHTML = afterMsg;
     }
+  }).catch(function (err) {
+    if (STATE_LOADED) {
+      // A real status is already on screen; a failed re-check shouldn't blank it.
+      const msg = document.getElementById('msg');
+      if (msg) msg.innerHTML = afterMsg || '<div class="status err">' + err.message + '</div>';
+      return;
+    }
+    STATE_LOAD_ERROR = err.message;
+    renderMe();
   });
 }
 
@@ -306,15 +379,15 @@ function renderMe() {
 
   const requiresGeofence = STATE.requiresGeofence !== false;
 
-  const phaseText = {
+  const phaseText = !STATE_LOADED ? (STATE_LOAD_ERROR ? 'Couldn’t load today’s status' : 'Loading today’s status…') : {
     not_started: STATE.rosterCode ? 'Not punched in &middot; Roster: ' + STATE.rosterCode : 'Not punched in',
     working: 'Working',
     on_break: STATE.breakType ? BREAK_LABEL[STATE.breakType] : 'On Break',
     completed: 'Day complete'
   }[STATE.phase];
-  const phaseClass = { not_started: 'phase-idle', working: 'phase-working', on_break: 'phase-break', completed: 'phase-done' }[STATE.phase];
+  const phaseClass = !STATE_LOADED ? 'phase-idle' : { not_started: 'phase-idle', working: 'phase-working', on_break: 'phase-break', completed: 'phase-done' }[STATE.phase];
 
-  const canAct = !requiresGeofence || (LOC_INFO && !LOC_INFO.error && LOC_INFO.within);
+  const canAct = STATE_LOADED && (!requiresGeofence || (LOC_INFO && !LOC_INFO.error && LOC_INFO.within));
 
   html += '<div class="card">';
   html += '<div class="phasebar ' + phaseClass + '">' + phaseText + '</div>';
@@ -328,7 +401,9 @@ function renderMe() {
     '<span class="stat-value" id="tile-TOTAL-BREAK">' + renderTotalBreakValue_() + '</span></div>';
   html += '</div>';
 
-  if (STATE.phase === 'completed') {
+  if (!STATE_LOADED) {
+    if (STATE_LOAD_ERROR) html += '<div class="status err">' + STATE_LOAD_ERROR + '</div><button id="stateRetryBtn" class="btn-in" style="margin-top:14px;">Try again</button>';
+  } else if (STATE.phase === 'completed') {
     html += '<div class="status ok">You have completed attendance for today.</div>';
   } else if (!canAct) {
     html += '<div class="status err">You must be within office range to punch in/out or take a break.</div>';
@@ -337,6 +412,8 @@ function renderMe() {
 
   body.innerHTML = html;
   wireRosterNav();
+  const stateRetryBtn = document.getElementById('stateRetryBtn');
+  if (stateRetryBtn) stateRetryBtn.addEventListener('click', function () { STATE_LOAD_ERROR = null; renderMe(); refreshDayState(); });
   document.querySelectorAll('[data-type]').forEach(function (el) {
     el.addEventListener('click', function () { onAction(el.getAttribute('data-type')); });
   });
