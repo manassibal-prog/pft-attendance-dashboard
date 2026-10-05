@@ -37,6 +37,10 @@ let TEAM_ROSTER = null;
 let TEAM_ROSTER_OFFSET = 0;
 let RECENT_LOG = null;
 let teamPollHandle = null;
+const TEAM_POLL_MS = 20000;
+let teamPollGen = 0;
+let teamPollBusy = false;
+let teamPollLastAt = 0;
 let DAY_REPORT = null;
 let DAY_REPORT_DATE = todayYyyyMmDd_();
 let breakTimerHandle = null;
@@ -184,7 +188,7 @@ function renderSignIn(errorMsg) {
 function boot() {
   startClock();
   onAuthReady(function (user, errorCode) {
-    if (teamPollHandle) { clearInterval(teamPollHandle); teamPollHandle = null; }
+    stopTeamPolling_();
     if (!user) {
       renderSignIn(errorCode === 'unauthorized_domain' ? 'Only ' + ALLOWED_DOMAINS_TEXT + ' accounts are allowed.' : null);
       return;
@@ -201,7 +205,9 @@ function loadCurrentUser() {
 
 function onFatal(err) {
   document.getElementById('app').innerHTML =
-    '<div class="card"><h1>Something went wrong</h1><div class="status err">' + err.message + '</div></div>';
+    '<div class="card"><h1>Something went wrong</h1><div class="status err">' + err.message + '</div>' +
+    '<button id="retryBtn" class="btn-in" style="margin-top:14px;">Try again</button></div>';
+  document.getElementById('retryBtn').addEventListener('click', loadCurrentUser);
 }
 
 function renderMobileBlocked() {
@@ -282,8 +288,7 @@ function renderShell() {
   if (IS_MANAGER) {
     ACTIVE_TAB = 'team';
     renderTeam();
-    loadTeam();
-    teamPollHandle = setInterval(loadTeam, 20000);
+    startTeamPolling_();
   } else {
     ACTIVE_TAB = 'me';
     renderMe();
@@ -512,16 +517,29 @@ function loadTeamRoster() {
     .catch(function () { /* non-fatal — rest of the tab still shows */ });
 }
 
-function loadDayEndReport() {
-  DAY_REPORT = null;
-  renderTeam();
-  api({ action: 'getDayEndReport', email: CURRENT.email, date: DAY_REPORT_DATE })
-    .then(function (r) { DAY_REPORT = Object.assign({}, r, { employees: sortByDayEndStatus_(r.employees) }); renderTeam(); })
+// silent: a background poll refreshing today's report keeps the rows already
+// on screen until fresh ones arrive, instead of flashing back to "Loading…"
+// every cycle (which also hid the report entirely whenever a poll was slow).
+// Date changes still blank it, since the old rows belong to another day.
+function loadDayEndReport(silent) {
+  if (!silent) {
+    DAY_REPORT = null;
+    renderTeam();
+  }
+  return api({ action: 'getDayEndReport', email: CURRENT.email, date: DAY_REPORT_DATE })
+    .then(function (r) {
+      if (r.date !== DAY_REPORT_DATE) return; // reply for a date the user has since navigated away from
+      DAY_REPORT = Object.assign({}, r, { employees: sortByDayEndStatus_(r.employees) });
+      renderTeam();
+    })
     .catch(function () { /* non-fatal — rest of the tab still shows */ });
 }
 
+// Resolves once every request in this cycle has settled (none of them reject),
+// so the poller below can wait for the cycle to finish before scheduling the next.
 function loadTeam() {
-  api({ action: 'getTeamStatus', email: CURRENT.email })
+  const jobs = [];
+  jobs.push(api({ action: 'getTeamStatus', email: CURRENT.email })
     .then(function (t) { TEAM = Object.assign({}, t, { employees: sortByStatus_(t.employees) }); TEAM_ERROR = null; renderTeam(); })
     .catch(function (err) {
       // A failed poll (transient Apps Script hiccup, timeout, etc.) only
@@ -531,17 +549,57 @@ function loadTeam() {
       // every 20s.
       TEAM_ERROR = err.message;
       renderTeam();
-    });
-  api({ action: 'getRecentLog', email: CURRENT.email, limit: 30 })
+    }));
+  jobs.push(api({ action: 'getRecentLog', email: CURRENT.email, limit: 30 })
     .then(function (log) { RECENT_LOG = log; renderTeam(); })
-    .catch(function () { /* non-fatal — Team Status card still shows */ });
+    .catch(function () { /* non-fatal — Team Status card still shows */ }));
   // Roster rarely changes within a session — fetch once per tab visit, not
   // on every 20s poll like the live status/log above. Nav clicks (loadTeamRoster)
   // fetch on demand separately.
   if (!TEAM_ROSTER) loadTeamRoster();
   // Same for the Day End Report: refresh on every poll only while looking at
   // today (still filling in); a past date is already final, no need to re-fetch.
-  if (!DAY_REPORT || DAY_REPORT_DATE === todayYyyyMmDd_()) loadDayEndReport();
+  if (!DAY_REPORT || DAY_REPORT_DATE === todayYyyyMmDd_()) jobs.push(loadDayEndReport(!!DAY_REPORT));
+  return Promise.all(jobs);
 }
+
+// Manager auto-refresh. Each cycle starts only after the previous one has
+// fully finished, plus TEAM_POLL_MS — a plain setInterval kept firing new
+// requests while slow ones were still running, and Apps Script keeps
+// executing a request even after the browser gives up on it, so under load
+// that snowballed. Hidden tabs skip their cycle entirely (an unattended
+// background tab was a steady drain on a shared backend for no one's benefit).
+function stopTeamPolling_() {
+  teamPollGen++;
+  teamPollBusy = false;
+  if (teamPollHandle) { clearTimeout(teamPollHandle); teamPollHandle = null; }
+}
+
+function startTeamPolling_() {
+  stopTeamPolling_();
+  teamPollTick_(teamPollGen);
+}
+
+function teamPollTick_(gen) {
+  if (gen !== teamPollGen) return;
+  if (teamPollHandle) { clearTimeout(teamPollHandle); teamPollHandle = null; }
+  if (document.hidden || teamPollBusy) {
+    teamPollHandle = setTimeout(function () { teamPollTick_(gen); }, TEAM_POLL_MS);
+    return;
+  }
+  teamPollBusy = true;
+  teamPollLastAt = Date.now();
+  loadTeam().then(function () {}, function () {}).then(function () {
+    if (gen !== teamPollGen) return;
+    teamPollBusy = false;
+    teamPollHandle = setTimeout(function () { teamPollTick_(gen); }, TEAM_POLL_MS);
+  });
+}
+
+// Coming back to a tab that sat hidden: refresh now rather than showing
+// data up to a full cycle stale.
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden && teamPollHandle && Date.now() - teamPollLastAt > TEAM_POLL_MS) teamPollTick_(teamPollGen);
+});
 
 boot();

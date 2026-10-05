@@ -111,7 +111,7 @@ Run this after editing `Code.gs`, before pushing.
 
 - Half-day threshold (net hours < 4) and late grace (Settings tab, default
   15 min) live in `updateDailySummary_` / the sheet.
-- Team Status poll interval: `teamPollHandle` in `../docs/js/app.js` (default 20s).
+- Team Status poll interval: `TEAM_POLL_MS` in `../docs/js/app.js` (default 20s, measured from when the previous refresh *finished*; hidden tabs don't poll).
 - Roster block format (2-row header, date columns from column K) is parsed
   in `rosterCodeFromGrid_` / `findTodayColumn_` / `findEmployeeRow_` in `Code.gs`.
 - API key / Firebase config: `../docs/js/config.js`.
