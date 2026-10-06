@@ -92,5 +92,30 @@ function mockFetch(steps) {
     assertEq(calls.n, 1);
   });
 
+  await t('a de-duplicated write (retryOnTimeout): a timeout IS retried, since the server can recognise the repeat', async function () {
+    const calls = mockFetch([
+      function (init) {
+        return new Promise(function (_, reject) {
+          init.signal.addEventListener('abort', function () { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+        });
+      },
+      async function () { return ok({ success: true, duplicate: true }); }
+    ]);
+    const r = await fetchJson('u', { timeoutMs: 20, retryDelaysMs: [1, 1], retryOnTimeout: true });
+    assertEq(r, { success: true, duplicate: true });
+    assertEq(calls.n, 2);
+  });
+
+  await t('a de-duplicated write gives up after its retries and reports the timeout', async function () {
+    const calls = mockFetch([function (init) {
+      return new Promise(function (_, reject) {
+        init.signal.addEventListener('abort', function () { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+      });
+    }]);
+    const e = await rejects(fetchJson('u', { timeoutMs: 15, retryDelaysMs: [1, 1], retryOnTimeout: true }));
+    assertEq(e.message, 'Server busy — please wait a moment and try again.');
+    assertEq(calls.n, 3);
+  });
+
   console.log('done');
 })();

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node test/dayState.test.js && node test/roster.test.js && node test/dateFmt.test.js && node test/http.test.js && node test/teampoll.test.js && node test/cachedsignin.test.js && node test/cache.test.js && node test/optimistic.test.js"
+    "test": "node test/dayState.test.js && node test/roster.test.js && node test/dateFmt.test.js && node test/http.test.js && node test/teampoll.test.js && node test/cachedsignin.test.js && node test/cache.test.js && node test/optimistic.test.js && node test/recordevent.test.js && node test/autoupdate.test.js"
   },
   "keywords": [],
   "author": "",

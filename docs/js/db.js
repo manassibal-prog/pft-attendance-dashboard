@@ -16,9 +16,11 @@ const _READ_ACTIONS = new Set(['getCurrentUser', 'checkLocation', 'getDayState',
 const _READ_TIMEOUT_MS = 60000;
 const _WRITE_TIMEOUT_MS = 60000;
 // Reads are idempotent, so transient failures (404/5xx/unreadable body) are
-// retried. Writes (recordEvent) are never retried here — see app.js onAction,
-// which reconciles with getDayState after any failed write instead.
+// retried. A write is retried only if it carries a requestId: the server
+// treats a repeat of the same requestId as "already done" (recordEvent), so
+// a lost reply can be retried safely. Writes without one are never retried.
 const _READ_RETRY_DELAYS_MS = [1500, 4000];
+const _WRITE_RETRY_DELAYS_MS = [1500, 4000];
 const _inflight = {};
 
 // GET (not POST) — Apps Script's redirect-on-execute can drop a POST body,
@@ -34,9 +36,11 @@ export async function api(params) {
   });
   const url = CONFIG.API_URL + '?' + urlParams.toString();
 
+  const idempotentWrite = !isRead && !!params.requestId;
   const promise = fetchJson(url, {
     timeoutMs: isRead ? _READ_TIMEOUT_MS : _WRITE_TIMEOUT_MS,
-    retryDelaysMs: isRead ? _READ_RETRY_DELAYS_MS : []
+    retryDelaysMs: isRead ? _READ_RETRY_DELAYS_MS : (idempotentWrite ? _WRITE_RETRY_DELAYS_MS : []),
+    retryOnTimeout: idempotentWrite
   }).finally(() => {
     if (dedupeKey) delete _inflight[dedupeKey];
   });

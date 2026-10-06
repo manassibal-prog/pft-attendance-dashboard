@@ -21,7 +21,11 @@ async function fetchJsonOnce_(url, timeoutMs) {
     if (json && json.error) throw new Error(json.error);
     return json;
   } catch (e) {
-    if (e.name === 'AbortError') throw new Error('Server busy — please wait a moment and try again.');
+    if (e.name === 'AbortError') {
+      const timedOut = new Error('Server busy — please wait a moment and try again.');
+      timedOut.timedOut = true;
+      throw timedOut;
+    }
     if (e instanceof TypeError) throw transientError_('Network error — check your connection');
     throw e;
   } finally {
@@ -30,15 +34,18 @@ async function fetchJsonOnce_(url, timeoutMs) {
 }
 
 // retryDelaysMs: one entry per retry (omit/[] for no retries). Timeouts are
-// not retried — the server is already slow, and an aborted request keeps
-// running there, so a second one just adds load.
+// not retried by default — the server is already slow, and an aborted request
+// keeps running there, so a second one just adds load. retryOnTimeout is for
+// requests the server de-duplicates (a write carrying a requestId): there,
+// "no answer" is exactly the case a retry exists for, and it can't double-apply.
 export async function fetchJson(url, opts) {
   const retryDelaysMs = opts.retryDelaysMs || [];
   for (let attempt = 0; ; attempt++) {
     try {
       return await fetchJsonOnce_(url, opts.timeoutMs);
     } catch (e) {
-      if (!e.transient || attempt >= retryDelaysMs.length) throw e;
+      const retryable = e.transient || (opts.retryOnTimeout && e.timedOut);
+      if (!retryable || attempt >= retryDelaysMs.length) throw e;
       await new Promise(function (resolve) { setTimeout(resolve, retryDelaysMs[attempt]); });
     }
   }

@@ -41,7 +41,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.
 function actionEnv() {
   const env = { renders: [], pending: [], apiCalls: [], refreshCalls: [], cacheWrites: [], msg: { innerHTML: '' } };
   const sandbox = {
-    STATE: freshState(), ACTION_IN_FLIGHT: false,
+    STATE: freshState(), ACTION_IN_FLIGHT: false, STATE_LOADED: true, STATE_LOAD_ERROR: null, STATE_PENDING_NOTE: null, STATE_RECHECK: null,
     CURRENT: { email: 'a@wiom.in' }, LAST_LOC: { lat: 28.44, lng: 77.04 },
     isMobileOrTablet_: function () { return false; },
     renderMe: function () { env.renders.push({ state: clone(sandbox.STATE), inFlight: sandbox.ACTION_IN_FLIGHT }); },
@@ -123,39 +123,79 @@ function actionEnv() {
     assertEq(env.sb.STATE.phase, 'working', 'state reflects only the first tap');
   });
 
-  await t('server rejects (e.g. outside geofence): rolls back to the previous state, then re-reads the server', async function () {
+  await t('every tap carries its own requestId (the server\'s retry-safety key); two taps never share one', async function () {
+    const env = actionEnv();
+    env.sb.onAction('PUNCH_IN');
+    await env.settle('resolve', { success: true, time: 't', state: { phase: 'working', breakType: null, punchIn: 'x', punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, breakStartedAt: null }, rosterCode: '', requiresGeofence: true });
+    env.sb.onAction('LUNCH_START');
+    const ids = env.apiCalls.map(function (c) { return c.requestId; });
+    assertEq(ids.every(function (i) { return typeof i === 'string' && i.length >= 8; }), true);
+    assertEq(ids[0] !== ids[1], true);
+  });
+
+  await t('refused WITH a state (already recorded, wrong order…): adopts the server state at once — no second request, no rollback to a stale screen', async function () {
+    const env = actionEnv();
+    env.sb.onAction('PUNCH_IN');
+    const serverState = { phase: 'working', breakType: null, punchIn: '2026-10-05T04:30:00.000Z', punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, breakStartedAt: null };
+    await env.settle('resolve', { success: false, message: 'You have already punched in today.', state: serverState, rosterCode: 'P', requiresGeofence: true });
+    assertEq(env.sb.ACTION_IN_FLIGHT, false);
+    assertEq(env.sb.STATE.phase, 'working');
+    assertEq(env.sb.STATE.punchIn, '2026-10-05T04:30:00.000Z');
+    assertEq(env.sb.STATE_LOADED, true);
+    assertEq(env.refreshCalls.length, 0, 'no follow-up round trip needed');
+    assertEq(env.apiCalls.length, 1);
+    assertEq(env.msg.innerHTML.indexOf('Already recorded') > -1, true, 'what they wanted is already true — say so, not an error');
+  });
+
+  await t('refused with a state that differs from what they wanted: shows the server state and the real reason', async function () {
+    const env = actionEnv();
+    env.sb.onAction('LUNCH_START');            // they thought they were working…
+    const serverState = { phase: 'on_break', breakType: 'TEA', punchIn: 'x', punchOut: null, breakTotals: { LUNCH: 0, TEA: 0, BIO: 0 }, breakStartedAt: '2026-10-05T05:00:00.000Z' };
+    await env.settle('resolve', { success: false, message: 'You are already on a Tea Break. End it before starting another break.', state: serverState, rosterCode: '', requiresGeofence: true });
+    assertEq([env.sb.STATE.phase, env.sb.STATE.breakType], ['on_break', 'TEA']);
+    assertEq(env.msg.innerHTML.indexOf('already on a Tea Break') > -1, true);
+    assertEq(env.msg.innerHTML.indexOf('Already recorded'), -1);
+  });
+
+  await t('refused by an older server (no state in the reply): rolls back, then re-reads the server', async function () {
     const env = actionEnv();
     const before = clone(env.sb.STATE);
     env.sb.onAction('PUNCH_IN');
-    await env.settle('resolve', { success: false, message: 'You are 800m from Head Office (allowed: 100m).' });
-    assertEq(env.sb.ACTION_IN_FLIGHT, false);
+    await env.settle('resolve', { success: false, message: 'You have already punched in today.' });
     assertEq(env.sb.STATE, before, 'guess undone');
     assertEq(env.refreshCalls.length, 1);
-    assertEq(env.refreshCalls[0][0].indexOf('800m from Head Office') > -1, true, 'the real reason is shown');
+    assertEq(env.refreshCalls[0][0].indexOf('already punched in') > -1, true);
     assertEq(env.cacheWrites.length, 0, 'an unconfirmed state is never saved');
   });
 
-  await t('answer never arrives (timeout/network): rolls back, re-reads the server, and says clearly if even that fails', async function () {
+  await t('no answer at all (retries exhausted): does NOT guess — locks the tiles, asks the server, and offers no tap meanwhile', async function () {
     const env = actionEnv();
-    const before = clone(env.sb.STATE);
     env.sb.onAction('LUNCH_START');
-    await env.settle('reject', new Error('Server busy — please wait a moment and try again.'));
+    await env.settle('reject', new Error('API request failed (404)'));
     assertEq(env.sb.ACTION_IN_FLIGHT, false);
-    assertEq(env.sb.STATE, before);
-    assertEq(env.refreshCalls.length, 1);
-    const afterMsg = env.refreshCalls[0][0];
-    const failMsg = env.refreshCalls[0][1];
-    assertEq(afterMsg.indexOf('Server busy') > -1 && afterMsg.indexOf('latest status from the server') > -1, true);
-    assertEq(failMsg.indexOf('couldn’t confirm whether that was recorded') > -1, true, 'unconfirmed punch must be called out, not left as "checking…"');
+    assertEq(env.sb.STATE_LOADED, false, 'tiles stay locked until the truth is known');
+    assertEq(env.sb.STATE_PENDING_NOTE, 'Confirming your last punch…');
+    assertEq(env.refreshCalls.length, 1, 'one re-read of the real state');
     assertEq(env.cacheWrites.length, 0);
   });
 
-  await t('after a failure the next tap is allowed again', async function () {
+  await t('...and once the truth arrives it says plainly whether the punch was recorded', async function () {
     const env = actionEnv();
-    env.sb.onAction('PUNCH_IN');
+    env.sb.onAction('LUNCH_START');
     await env.settle('reject', new Error('x'));
-    env.sb.onAction('PUNCH_IN');
-    assertEq(env.apiCalls.length, 2);
+    const after = env.refreshCalls[0][0];
+    const recorded = Object.assign(freshState(), { phase: 'on_break', breakType: 'LUNCH' });
+    const notRecorded = Object.assign(freshState(), { phase: 'working' });
+    assertEq(after(recorded).indexOf('was recorded') > -1, true);
+    assertEq(after(notRecorded).indexOf('wasn’t recorded') > -1, true);
+  });
+
+  await t('...and if even that re-check fails, the failure text says the punch is unconfirmed', async function () {
+    const env = actionEnv();
+    env.sb.onAction('PUNCH_OUT');
+    await env.settle('reject', new Error('Server busy — please wait a moment and try again.'));
+    const failText = env.refreshCalls[0][1];
+    assertEq(failText.indexOf('Server busy') > -1 && failText.indexOf('couldn’t confirm whether your last punch was recorded') > -1, true);
   });
 
   // ---------- hydration ----------
@@ -164,7 +204,7 @@ function actionEnv() {
     const sandbox = Object.assign({
       CURRENT: { email: 'a@wiom.in' }, IS_MANAGER: false, DAY_REPORT_DATE: '2026-10-05', TEAM_ROSTER_OFFSET: 0,
       TEAM: null, TEAM_STALE: false, TEAM_ERROR: null, RECENT_LOG: null, TEAM_ROSTER: null, TEAM_ROSTER_FRESH: false, DAY_REPORT: null,
-      STATE: freshState(), STATE_LOADED: false, STATE_LOAD_ERROR: null, ACTION_IN_FLIGHT: false,
+      STATE: freshState(), STATE_LOADED: false, STATE_LOAD_ERROR: null, STATE_PENDING_NOTE: null, STATE_RECHECK: null, ACTION_IN_FLIGHT: false,
       freshState_: freshState,
       localDay: function () { return '2026-10-05'; },
       cacheGet: function (email, name, valid) {
@@ -244,7 +284,7 @@ function actionEnv() {
   function renderEnv(over) {
     const out = { html: '' };
     const sandbox = Object.assign({
-      ACTIVE_TAB: 'me', STATE: freshState(), STATE_LOADED: true, STATE_LOAD_ERROR: null, ACTION_IN_FLIGHT: false,
+      ACTIVE_TAB: 'me', STATE: freshState(), STATE_LOADED: true, STATE_LOAD_ERROR: null, STATE_PENDING_NOTE: null, STATE_RECHECK: null, ACTION_IN_FLIGHT: false,
       LOC_INFO: null, LAST_LOC: { lat: 1, lng: 2 },
       BREAK_LABEL: { LUNCH: 'Lunch Break', TEA: 'Tea Break', BIO: 'Bio Break' },
       renderRosterCard: function () { return ''; }, wireRosterNav: function () {}, fmtTime: function (v) { return v ? 'T' : '—'; },
@@ -267,6 +307,13 @@ function actionEnv() {
     const html = renderEnv({ STATE_LOADED: false });
     assertEq(clickable(html), 0);
     assertEq(html.indexOf('Loading today’s status…') > -1, true);
+    assertEq(html.indexOf('within office range'), -1);
+  });
+
+  await t('render: while a tap\'s outcome is unknown the card says so and NO tile can be tapped', async function () {
+    const html = renderEnv({ STATE_LOADED: false, STATE_PENDING_NOTE: 'Confirming your last punch…' });
+    assertEq(html.indexOf('Confirming your last punch…') > -1, true);
+    assertEq(clickable(html), 0);
     assertEq(html.indexOf('within office range'), -1);
   });
 

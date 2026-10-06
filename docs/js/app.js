@@ -40,6 +40,10 @@ let STATE = freshState_();
 // offering "Punch In" on a guess.
 let STATE_LOADED = false;
 let STATE_LOAD_ERROR = null;
+// While a tap's outcome is unknown (no answer even after retries): what to say
+// on the locked card, and how to word the result once the server tells us.
+let STATE_PENDING_NOTE = null;
+let STATE_RECHECK = null;
 // True from the moment a punch/break tap is sent until the server answers.
 // The screen already shows the expected result; further taps wait so two
 // requests can't reach the server out of order.
@@ -203,9 +207,67 @@ function renderSignIn(errorMsg) {
   });
 }
 
+// ---------- Pick up new versions without anyone having to refresh ----------
+// This is a single page people leave open for days, so a deploy never reaches
+// an open tab until it is reloaded — fixes sit unused while the old code keeps
+// misbehaving. Every few minutes, compare the deployed files' ETags with the
+// ones this tab loaded; on a change, reload quietly while nobody is looking
+// (tab hidden), otherwise show a "Reload now" bar. Never while a punch is
+// saving. If the headers can't be read the check does nothing.
+const VERSION_FILES = ['./', 'js/app.js', 'js/db.js', 'js/http.js', 'js/cache.js', 'js/auth.js', 'js/config.js'];
+const VERSION_CHECK_MS = 5 * 60 * 1000;
+let loadedVersion = null;
+let latestVersion = null;
+
+function fetchVersion_() {
+  return Promise.all(VERSION_FILES.map(function (f) {
+    return fetch(new URL(f, location.href).href, { method: 'HEAD', cache: 'no-store' })
+      .then(function (r) { return r.ok ? (r.headers.get('etag') || r.headers.get('last-modified') || '') : ''; });
+  })).then(function (parts) {
+    return parts.every(function (p) { return p; }) ? parts.join('|') : null;
+  });
+}
+
+function checkForUpdate_() {
+  return fetchVersion_().then(function (v) {
+    if (!v) return;
+    if (loadedVersion === null) { loadedVersion = v; return; }
+    if (v !== loadedVersion) { latestVersion = v; applyUpdate_(); }
+  }).catch(function () { /* offline etc. — try again next time */ });
+}
+
+function applyUpdate_() {
+  if (!latestVersion || ACTION_IN_FLIGHT) return;
+  if (document.hidden) {
+    // Once per version: if the headers ever flap, never reload-loop.
+    try {
+      if (sessionStorage.getItem('pft-reloaded-for') === latestVersion) return;
+      sessionStorage.setItem('pft-reloaded-for', latestVersion);
+    } catch (_) {}
+    location.reload();
+    return;
+  }
+  if (document.getElementById('updateBanner')) return;
+  const bar = document.createElement('div');
+  bar.id = 'updateBanner';
+  bar.className = 'update-banner';
+  bar.innerHTML = 'A new version of the dashboard is ready. <button id="updateNowBtn" type="button">Reload now</button>';
+  document.body.insertBefore(bar, document.body.firstChild);
+  document.getElementById('updateNowBtn').addEventListener('click', function () { location.reload(); });
+}
+
+function startUpdateChecks_() {
+  checkForUpdate_();
+  setInterval(checkForUpdate_, VERSION_CHECK_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) applyUpdate_(); else checkForUpdate_();
+  });
+}
+
 // ---------- Boot / identity ----------
 function boot() {
   startClock();
+  startUpdateChecks_();
   onAuthReady(function (user, errorCode) {
     stopTeamPolling_();
     userLoadSeq++;
@@ -227,6 +289,7 @@ function resetSessionData_() {
   TEAM = null; TEAM_STALE = false; TEAM_ERROR = null; RECENT_LOG = null;
   TEAM_ROSTER = null; TEAM_ROSTER_FRESH = false; DAY_REPORT = null;
   STATE = freshState_(); STATE_LOADED = false; STATE_LOAD_ERROR = null;
+  STATE_PENDING_NOTE = null; STATE_RECHECK = null;
   ACTION_IN_FLIGHT = false;
 }
 
@@ -361,9 +424,10 @@ function onUser(res) {
   }
 }
 
-// afterMsg: shown once the fresh state has loaded. failMsg: shown instead if
-// that re-check itself fails (defaults to afterMsg, or the raw error).
-function refreshDayState(afterMsg, failMsg) {
+// afterMsg: HTML — or a function of the fresh state returning HTML — shown
+// once the fresh state has loaded. failText: plain text shown if that re-check
+// itself fails (defaults to the raw error).
+function refreshDayState(afterMsg, failText) {
   api({ action: 'getDayState', email: CURRENT.email }).then(function (s) {
     // A tap is mid-flight: this answer predates it and would flicker the
     // screen back; the tap's own response is the newer truth.
@@ -371,20 +435,24 @@ function refreshDayState(afterMsg, failMsg) {
     STATE = s;
     STATE_LOADED = true;
     STATE_LOAD_ERROR = null;
+    STATE_PENDING_NOTE = null;
+    STATE_RECHECK = null;
     cacheSet(CURRENT.email, 'daystate', STATE);
     renderMe();
-    if (afterMsg) {
+    const html = typeof afterMsg === 'function' ? afterMsg(STATE) : afterMsg;
+    if (html) {
       const msg = document.getElementById('msg');
-      if (msg) msg.innerHTML = afterMsg;
+      if (msg) msg.innerHTML = html;
     }
   }).catch(function (err) {
     if (STATE_LOADED) {
       // A real status is already on screen; a failed re-check shouldn't blank it.
       const msg = document.getElementById('msg');
-      if (msg) msg.innerHTML = failMsg || afterMsg || '<div class="status err">' + err.message + '</div>';
+      if (msg) msg.innerHTML = '<div class="status err">' + (failText || err.message) + '</div>';
       return;
     }
-    STATE_LOAD_ERROR = err.message;
+    STATE_PENDING_NOTE = null;
+    STATE_LOAD_ERROR = failText || err.message;
     renderMe();
   });
 }
@@ -432,7 +500,7 @@ function renderMe() {
 
   const requiresGeofence = STATE.requiresGeofence !== false;
 
-  const phaseText = !STATE_LOADED ? (STATE_LOAD_ERROR ? 'Couldn’t load today’s status' : 'Loading today’s status…') : {
+  const phaseText = !STATE_LOADED ? (STATE_LOAD_ERROR ? 'Couldn’t load today’s status' : (STATE_PENDING_NOTE || 'Loading today’s status…')) : {
     not_started: STATE.rosterCode ? 'Not punched in &middot; Roster: ' + STATE.rosterCode : 'Not punched in',
     working: 'Working',
     on_break: STATE.breakType ? BREAK_LABEL[STATE.breakType] : 'On Break',
@@ -474,7 +542,12 @@ function renderMe() {
   body.innerHTML = html;
   wireRosterNav();
   const stateRetryBtn = document.getElementById('stateRetryBtn');
-  if (stateRetryBtn) stateRetryBtn.addEventListener('click', function () { STATE_LOAD_ERROR = null; renderMe(); refreshDayState(); });
+  if (stateRetryBtn) stateRetryBtn.addEventListener('click', function () {
+    STATE_LOAD_ERROR = null;
+    if (STATE_RECHECK) STATE_PENDING_NOTE = 'Confirming your last punch…';
+    renderMe();
+    refreshDayState(STATE_RECHECK && STATE_RECHECK.after, STATE_RECHECK && STATE_RECHECK.failText);
+  });
   document.querySelectorAll('[data-type]').forEach(function (el) {
     el.addEventListener('click', function () { onAction(el.getAttribute('data-type')); });
   });
@@ -568,18 +641,37 @@ function predictState_(s, type, now) {
   return next;
 }
 
+function newRequestId_() {
+  try { if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID(); } catch (_) {}
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+}
+
+// Same standing = same phase (and the same break, if on one).
+function sameStanding_(a, b) {
+  return a.phase === b.phase && (a.breakType || null) === (b.breakType || null);
+}
+
 // Optimistic: the tap shows its result at once and the request confirms it in
-// the background (the endpoint can take tens of seconds). If the server says
-// no, or the answer never arrives, the screen goes back to what it was and
-// then re-reads the truth from the server — a timed-out write may well have
-// gone through, so "never arrived" is not "didn't happen".
+// the background (the endpoint can take tens of seconds). Each tap carries a
+// requestId that stays the same across the transport's retries, and the
+// server treats a repeat of it as "already done" — so a reply that gets lost
+// on the way back is retried automatically instead of leaving the person
+// guessing (and tapping again, which is what produced the repeated
+// "Blocked - invalid order" rows). Three outcomes:
+//   * confirmed            -> the server's state replaces the guess
+//   * refused, with state  -> adopt that state straight away (one reply is enough
+//                             to correct a screen that has drifted)
+//   * no answer at all     -> the tap may or may not have been recorded, so don't
+//                             keep the guess and don't offer the tap again: lock
+//                             the tiles and ask the server where things stand.
 function onAction(type) {
   if (ACTION_IN_FLIGHT) return;
   const before = STATE;
+  const predicted = predictState_(before, type, new Date());
   ACTION_IN_FLIGHT = true;
-  STATE = predictState_(before, type, new Date());
+  STATE = predicted;
   renderMe();
-  api({ action: 'recordEvent', email: CURRENT.email, type: type, lat: LAST_LOC ? LAST_LOC.lat : '', lng: LAST_LOC ? LAST_LOC.lng : '', device: isMobileOrTablet_() ? 'mobile' : 'desktop' })
+  api({ action: 'recordEvent', email: CURRENT.email, type: type, lat: LAST_LOC ? LAST_LOC.lat : '', lng: LAST_LOC ? LAST_LOC.lng : '', device: isMobileOrTablet_() ? 'mobile' : 'desktop', requestId: newRequestId_() })
     .then(function (res) {
       ACTION_IN_FLIGHT = false;
       if (res.success) {
@@ -588,9 +680,18 @@ function onAction(type) {
         renderMe();
         const msg = document.getElementById('msg');
         if (msg) msg.innerHTML = '<div class="status ok">Recorded at ' + res.time + '.</div>';
+      } else if (res.state) {
+        STATE = Object.assign({}, res.state, { rosterCode: res.rosterCode, requiresGeofence: res.requiresGeofence });
+        STATE_LOADED = true;
+        cacheSet(CURRENT.email, 'daystate', STATE);
+        renderMe();
+        const msg = document.getElementById('msg');
+        if (msg) msg.innerHTML = sameStanding_(STATE, predicted)
+          ? '<div class="status ok">Already recorded &mdash; this is your current status.</div>'
+          : '<div class="status err">' + res.message + '</div>';
       } else {
-        // Rejected (outside the geofence, wrong order, …): nothing was
-        // recorded. Undo the guess, then trust the server over our local state.
+        // Refused without a state (an older server, or the geofence): nothing
+        // was recorded. Undo the guess, then trust the server over our local state.
         STATE = before;
         renderMe();
         refreshDayState('<div class="status err">' + res.message + '</div>');
@@ -599,11 +700,19 @@ function onAction(type) {
     .catch(function (err) {
       ACTION_IN_FLIGHT = false;
       STATE = before;
+      STATE_LOADED = false;
+      STATE_LOAD_ERROR = null;
+      STATE_PENDING_NOTE = 'Confirming your last punch…';
+      STATE_RECHECK = {
+        after: function (fresh) {
+          return sameStanding_(fresh, predicted)
+            ? '<div class="status ok">Your last punch was recorded.</div>'
+            : '<div class="status err">That punch wasn’t recorded &mdash; tap it again.</div>';
+        },
+        failText: err.message + ' — we couldn’t confirm whether your last punch was recorded.'
+      };
       renderMe();
-      refreshDayState(
-        '<div class="status err">' + err.message + ' &mdash; showing your latest status from the server.</div>',
-        '<div class="status err">' + err.message + ' &mdash; we couldn’t confirm whether that was recorded. Check your connection and refresh the page.</div>'
-      );
+      refreshDayState(STATE_RECHECK.after, STATE_RECHECK.failText);
     });
 }
 

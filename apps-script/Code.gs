@@ -72,6 +72,10 @@ const ACTIONS = {
       const lng = p.lng === '' || p.lng === undefined ? null : Number(p.lng);
       const now = new Date();
       const eventsLog = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
+      // Idempotency key from the browser: one per tap, reused on every retry
+      // of that tap. Stored in column K of Punch Events Log.
+      const requestId = String(p.requestId || '').slice(0, 64);
+      ensureRequestIdHeader_(eventsLog);
 
       // Advisors mark attendance from a laptop/desktop only (company policy,
       // not a security boundary) — docs/js/app.js already hides the punch UI
@@ -80,30 +84,42 @@ const ACTIONS = {
       // `device` is self-reported by the caller and not cryptographically
       // provable; this catches the casual case, not a determined spoof.
       if (String(p.device || '').toLowerCase() === 'mobile') {
-        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, '', '', 'Blocked - mobile device']);
+        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, '', '', 'Blocked - mobile device', requestId]);
         throw new Error('Attendance can only be marked from a laptop or desktop browser, not a phone or tablet.');
       }
 
       const todayEvents = getTodayEvents_(emp.empId);
       const state = computeDayState_(todayEvents);
-
-      if (!validTransition_(state.phase, state.breakType, type)) {
-        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, '', '', 'Blocked - invalid order']);
-        throw new Error(transitionErrorMessage_(state, type));
-      }
-
       const settings = getSettings_();
       const rosterCode = getTodayRosterCodeFor_(emp.name, now, emp.weeklyOff);
       const requiresGeofence = rosterCode.toUpperCase() !== 'WFH';
+
+      // The answer to an earlier attempt of this same tap got lost on the way
+      // back (Apps Script's reply path drops or delays responses for a
+      // working execution), so the browser is asking again. It already
+      // happened — say so instead of rejecting it as a repeat.
+      const prior = requestId ? findSuccessByRequestId_(todayEvents, requestId, type) : null;
+      if (prior) {
+        return { success: true, duplicate: true, time: prior.timestamp.toLocaleTimeString(), state: serializeState_(state), rosterCode: rosterCode, requiresGeofence: requiresGeofence };
+      }
+
+      // A refusal carries the current state too, so a screen that has drifted
+      // (a tap whose reply never arrived, a second tab) snaps back to the truth
+      // from this one reply rather than needing another round trip to find out.
+      if (!validTransition_(state.phase, state.breakType, type)) {
+        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, '', '', 'Blocked - invalid order', requestId]);
+        return { success: false, message: transitionErrorMessage_(state, type), state: serializeState_(state), rosterCode: rosterCode, requiresGeofence: requiresGeofence };
+      }
+
       const distance = Math.round(haversineMeters_(lat, lng, settings.lat, settings.lng));
       const within = distance <= settings.radius;
 
       if (requiresGeofence && !within) {
-        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, distance, 'No', 'Blocked - outside geofence']);
-        throw new Error('You are ' + distance + 'm from ' + settings.officeName + ' (allowed: ' + settings.radius + 'm). Move closer and try again.');
+        eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, distance, 'No', 'Blocked - outside geofence', requestId]);
+        return { success: false, message: 'You are ' + distance + 'm from ' + settings.officeName + ' (allowed: ' + settings.radius + 'm). Move closer and try again.', state: serializeState_(state), rosterCode: rosterCode, requiresGeofence: requiresGeofence };
       }
 
-      eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, distance, requiresGeofence ? (within ? 'Yes' : 'No') : 'N/A (WFH)', 'Success']);
+      eventsLog.appendRow([now, emp.empId, emp.name, emp.email, type, lat, lng, distance, requiresGeofence ? (within ? 'Yes' : 'No') : 'N/A (WFH)', 'Success', requestId]);
 
       const newState = computeDayState_(todayEvents.concat([{ type: type, timestamp: now }]));
       updateDailySummary_(emp, now, newState, rosterCode, settings);
@@ -315,8 +331,8 @@ function initializeSheets() {
   if (!ss.getSheetByName(SHEET_EVENTS)) {
     const sh = ss.insertSheet(SHEET_EVENTS);
     sh.appendRow(['Timestamp', 'Emp ID', 'Employee Name', 'Email', 'Event Type', 'Latitude', 'Longitude',
-                  'Distance From Office (m)', 'Within Geofence', 'Result']);
-    sh.getRange(1, 1, 1, 10).setFontWeight('bold');
+                  'Distance From Office (m)', 'Within Geofence', 'Result', 'Request ID']);
+    sh.getRange(1, 1, 1, 11).setFontWeight('bold');
     sh.setFrozenRows(1);
   }
 
@@ -741,10 +757,27 @@ function getTodayEvents_(empId) {
     if (row[9] !== 'Success') continue;
     const ts = new Date(row[0]);
     if (Utilities.formatDate(ts, tz, 'yyyy-MM-dd') !== today) continue;
-    out.push({ type: row[4], timestamp: ts });
+    out.push({ type: row[4], timestamp: ts, requestId: row[10] ? String(row[10]) : '' });
   }
   out.sort((a, b) => a.timestamp - b.timestamp);
   return out;
+}
+
+// The earlier successful event for this exact tap (same idempotency key AND
+// same event type), if any. Only Success rows are ever passed in, so a tap
+// that was refused is never mistaken for one that went through.
+function findSuccessByRequestId_(events, requestId, type) {
+  for (let i = 0; i < events.length; i++) {
+    if (events[i].requestId === requestId && events[i].type === type) return events[i];
+  }
+  return null;
+}
+
+// Punch Events Log predates the Request ID column; label it the first time a
+// row is written there (cheap — no cell values are read).
+const REQUEST_ID_COL = 11;
+function ensureRequestIdHeader_(eventsLog) {
+  if (eventsLog.getLastColumn() < REQUEST_ID_COL) eventsLog.getRange(1, REQUEST_ID_COL).setValue('Request ID');
 }
 
 // Grace-gates lateBy immediately, so it reads the same whether the day is
