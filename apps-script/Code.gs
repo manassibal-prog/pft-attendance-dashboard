@@ -136,7 +136,6 @@ const ACTIONS = {
     if (res.error) throw new Error(res.error);
     const offset = Number(p.weekOffset || 0);
     const grid = getRosterGrid_();
-    const employees = listActiveAdvisors_();
     const today = new Date();
     const dow = today.getDay();
     const mondayOffset = (dow === 0 ? -6 : 1 - dow) + offset * 7;
@@ -145,6 +144,7 @@ const ACTIONS = {
     const todayKey = formatDdMmmYyyy_(today);
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const dateKeys = days.map(function (d) { return d.key; });
+    const employees = orderLikeRoster_(listActiveAdvisors_(), grid, dateKeys);
     const logIndex = dailyLogIndexForDates_(dateKeys);
 
     const rows = rosterCodesForWeek_(grid, employees, dateKeys).map(function (r) {
@@ -577,6 +577,42 @@ function rosterCodeForDate_(grid, employeeName, dateStr) {
   return code ? String(code).trim() : '';
 }
 
+// name (lowercased) -> grid row, for the employee rows of the monthly block
+// whose date header sits at headerRow. A block ends at the first blank name
+// (or the next block's "Name" header).
+function blockNameRows_(grid, headerRow) {
+  const idx = {};
+  for (let r = headerRow + 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    const name = row[1];
+    if (!name || String(name).trim() === '') break;
+    if (String(name).trim().toLowerCase() === 'name') break;
+    idx[String(name).trim().toLowerCase()] = r;
+  }
+  return idx;
+}
+
+// Each monthly block lists its people in its own order (the admin arranges
+// the Roster tab, and that order is what they expect to see), so the Team
+// Roster follows the block holding the week's first date that exists in the
+// grid. Anyone missing from that block goes after the listed ones, in the
+// order they came in; if no date is found at all, nothing is reordered.
+function orderLikeRoster_(employees, grid, dateKeys) {
+  let position = null;
+  for (let i = 0; i < dateKeys.length && !position; i++) {
+    const found = findTodayColumn_(grid, dateKeys[i]);
+    if (found) position = blockNameRows_(grid, found.headerRow);
+  }
+  if (!position) return employees;
+  return employees
+    .map(function (e, i) {
+      const r = position[String(e.name).trim().toLowerCase()];
+      return { e: e, i: i, r: r === undefined ? Infinity : r };
+    })
+    .sort(function (a, b) { return a.r === b.r ? a.i - b.i : (a.r < b.r ? -1 : 1); })
+    .map(function (x) { return x.e; });
+}
+
 // Same result as calling rosterCodeForDate_ once per (employee, day) pair,
 // but without redundantly re-scanning the whole grid for every one of
 // those calls: a week x team grid is employees.length x days.length
@@ -598,17 +634,7 @@ function rosterCodesForWeek_(grid, employees, dateKeys) {
   }
   const rowIndexCache = {};
   function rowIndexFor(headerRow) {
-    if (!(headerRow in rowIndexCache)) {
-      const idx = {};
-      for (let r = headerRow + 1; r < grid.length; r++) {
-        const row = grid[r] || [];
-        const name = row[1];
-        if (!name || String(name).trim() === '') break;
-        if (String(name).trim().toLowerCase() === 'name') break;
-        idx[String(name).trim().toLowerCase()] = r;
-      }
-      rowIndexCache[headerRow] = idx;
-    }
+    if (!(headerRow in rowIndexCache)) rowIndexCache[headerRow] = blockNameRows_(grid, headerRow);
     return rowIndexCache[headerRow];
   }
 

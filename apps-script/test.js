@@ -160,6 +160,78 @@ t('rosterCodesForWeek_ (batched/memoized) matches rosterCodeForDate_ (per-cell) 
   assertEq(batched[1].codes[3], '');
 });
 
+// ---- orderLikeRoster_ (Team Roster rows follow the Roster tab's own order, month by month) ----
+// Mirrors the live tab: one block per month, newest on top, each block listing
+// the same people in its own order, managers included.
+const hdr = (...dates) => ['', 'Name', '', '', '', '', '', '', '', '', ...dates];
+const blk = (header, names, codes) => [header]
+  .concat(names.map((n) => ['', n, '', '', '', '', '', '', '', '', ...((codes && codes[n]) || [])]))
+  .concat([['', '']]);
+const orderGrid = [].concat(
+  blk(hdr('01/Nov/2026', '02/Nov/2026', '03/Nov/2026'),
+    ['Dhananjay', 'Hitesh', 'Amar', 'Pintoo', 'Noor', 'Anas', 'Deeksha', 'Nirmal', 'Sandeep', 'Kriti', 'Manas'],
+    { Anas: ['P', 'WO', 'P'], Nirmal: ['P', 'WFH', 'P'], Deeksha: ['P', 'L', 'P'] }),
+  blk(hdr('30/Oct/2026', '31/Oct/2026'),
+    ['Dhananjay', 'Hitesh', 'Deeksha', 'Anas', 'Nirmal', 'Amar', 'Pintoo', 'Noor', 'Sandeep', 'Kriti', 'Manas'])
+);
+// Employee Master order, managers already filtered out (listActiveAdvisors_).
+const masterOrder = ['Sandeep', 'Noor', 'Kriti', 'Dhananjay', 'Amar', 'Pintoo', 'Hitesh', 'deeksha', 'Anas', 'Nirmal']
+  .map((name, i) => ({ empId: 'E' + i, name }));
+const namesOf = (list) => list.map((e) => e.name);
+
+t('orderLikeRoster_: a November week follows the November block, not Employee Master order', () => {
+  const out = sandbox.orderLikeRoster_(masterOrder, orderGrid, ['02/Nov/2026', '03/Nov/2026']);
+  assertEq(namesOf(out), ['Dhananjay', 'Hitesh', 'Amar', 'Pintoo', 'Noor', 'Anas', 'deeksha', 'Nirmal', 'Sandeep', 'Kriti']);
+});
+t('orderLikeRoster_: an October week follows the October block (each month has its own order)', () => {
+  const out = sandbox.orderLikeRoster_(masterOrder, orderGrid, ['30/Oct/2026', '31/Oct/2026']);
+  assertEq(namesOf(out), ['Dhananjay', 'Hitesh', 'deeksha', 'Anas', 'Nirmal', 'Amar', 'Pintoo', 'Noor', 'Sandeep', 'Kriti']);
+});
+t('orderLikeRoster_: names match case-insensitively ("deeksha" in Employee Master vs "Deeksha" in the Roster)', () => {
+  const out = sandbox.orderLikeRoster_(masterOrder, orderGrid, ['02/Nov/2026']);
+  assertEq(namesOf(out).indexOf('deeksha'), 6);
+});
+t('orderLikeRoster_: people in the block but not in the advisor list (managers) are skipped', () => {
+  const out = sandbox.orderLikeRoster_(masterOrder, orderGrid, ['02/Nov/2026']);
+  assertEq(namesOf(out).indexOf('Manas'), -1);
+  assertEq(out.length, masterOrder.length);
+});
+t('orderLikeRoster_: an advisor missing from that block goes after the listed ones, in their original order', () => {
+  const extra = masterOrder.concat([{ empId: 'N1', name: 'Newbie' }, { empId: 'N2', name: 'Another' }]);
+  const shuffled = [extra[10], extra[0], extra[11]].concat(extra.slice(1, 10));      // Newbie, Sandeep, Another, ...
+  const out = sandbox.orderLikeRoster_(shuffled, orderGrid, ['02/Nov/2026']);
+  assertEq(namesOf(out).slice(-2), ['Newbie', 'Another']);
+  assertEq(namesOf(out).slice(0, 3), ['Dhananjay', 'Hitesh', 'Amar']);
+});
+t('orderLikeRoster_: a week with no date anywhere in the grid is left exactly as it was', () => {
+  const out = sandbox.orderLikeRoster_(masterOrder, orderGrid, ['05/Jan/2027', '06/Jan/2027']);
+  assertEq(namesOf(out), namesOf(masterOrder));
+});
+t('orderLikeRoster_: a week spanning two months uses the month of its first date', () => {
+  const out = sandbox.orderLikeRoster_(masterOrder, orderGrid, ['31/Oct/2026', '01/Nov/2026']);
+  assertEq(namesOf(out).slice(0, 4), ['Dhananjay', 'Hitesh', 'deeksha', 'Anas']);
+});
+t('orderLikeRoster_: when a new month\'s block appears it is used automatically, no code change', () => {
+  const dec = blk(hdr('01/Dec/2026', '02/Dec/2026'), ['Kriti', 'Nirmal', 'Anas', 'Sandeep', 'Noor', 'Pintoo', 'Amar', 'Deeksha', 'Hitesh', 'Dhananjay', 'Manas']);
+  const out = sandbox.orderLikeRoster_(masterOrder, dec.concat(orderGrid), ['01/Dec/2026', '02/Dec/2026']);
+  assertEq(namesOf(out), ['Kriti', 'Nirmal', 'Anas', 'Sandeep', 'Noor', 'Pintoo', 'Amar', 'deeksha', 'Hitesh', 'Dhananjay']);
+  assertEq(namesOf(sandbox.orderLikeRoster_(masterOrder, dec.concat(orderGrid), ['02/Nov/2026'])).slice(0, 2), ['Dhananjay', 'Hitesh']);
+});
+t('orderLikeRoster_: does not mutate the list it is given', () => {
+  const before = namesOf(masterOrder);
+  sandbox.orderLikeRoster_(masterOrder, orderGrid, ['02/Nov/2026']);
+  assertEq(namesOf(masterOrder), before);
+});
+t('orderLikeRoster_ then rosterCodesForWeek_: each person keeps their OWN codes after reordering', () => {
+  const dateKeys = ['01/Nov/2026', '02/Nov/2026', '03/Nov/2026'];
+  const rows = sandbox.rosterCodesForWeek_(orderGrid, sandbox.orderLikeRoster_(masterOrder, orderGrid, dateKeys), dateKeys);
+  const byName = {}; rows.forEach((r) => { byName[r.name] = r.codes; });
+  assertEq(byName.Anas, ['P', 'WO', 'P']);
+  assertEq(byName.Nirmal, ['P', 'WFH', 'P']);
+  assertEq(byName.deeksha, ['P', 'L', 'P']);
+  assertEq(rows.map((r) => r.name).slice(0, 3), ['Dhananjay', 'Hitesh', 'Amar']);
+});
+
 // ---- shiftDisplayCode_ (Roster shift codes "10-7"/"11-8" -> real P/HD/UP) ----
 const logRow = (netHours) => { const r = []; r[11] = netHours; return r; };
 
