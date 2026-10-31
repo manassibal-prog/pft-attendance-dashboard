@@ -8,7 +8,7 @@ import { fetchJson } from './http.js';
 const app = initializeApp(FIREBASE_CONFIG);
 export const auth = getAuth(app);
 
-const _READ_ACTIONS = new Set(['getCurrentUser', 'checkLocation', 'getDayState', 'getTeamRoster', 'getTeamStatus', 'getRecentLog', 'getDayEndReport']);
+const _READ_ACTIONS = new Set(['getCurrentUser', 'checkLocation', 'getDayState', 'getTeamRoster', 'getTeamStatus', 'getRecentLog', 'getDayEndReport', 'getMyLeave']);
 // Aborting a request doesn't cancel it on Apps Script's side — it keeps
 // running and holding one of the project's concurrent-execution slots — so
 // a short client timeout under load only piles up orphaned work. Reads get

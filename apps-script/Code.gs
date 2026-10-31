@@ -22,6 +22,7 @@ const SHEET_LOG = 'Daily Attendance Log';
 const SHEET_EVENTS = 'Punch Events Log';
 const SHEET_ROSTER = 'Roster';
 const SHEET_SUMMARY = 'Monthly Summary';
+const SHEET_LEAVE = 'Leave Requests';
 const GRACE_MINUTES_DEFAULT = 15;
 
 // Shared secret with the static frontend (docs/js/config.js). Not a secret
@@ -125,6 +126,87 @@ const ACTIONS = {
       updateDailySummary_(emp, now, newState, rosterCode, settings);
 
       return { success: true, time: now.toLocaleTimeString(), distance: distance, state: serializeState_(newState), rosterCode: rosterCode, requiresGeofence: requiresGeofence };
+    } catch (err) {
+      return { success: false, message: err.message };
+    } finally {
+      lock.releaseLock();
+    }
+  },
+  // The signed-in person's own leave / half-day requests (newest date first).
+  getMyLeave: function (p) {
+    const res = resolveEmployee_(p.email);
+    if (res.error) throw new Error(res.error);
+    const mine = readLeave_()
+      .filter(function (r) { return r.email === String(res.emp.email).trim().toLowerCase(); })
+      .map(clientLeave_)
+      .sort(function (a, b) { return a.date === b.date ? 0 : (a.date < b.date ? 1 : -1); });
+    return { requests: mine.slice(0, 100) };
+  },
+  // Marks a day as Leave / Half Day / Unpaid Leave / Work From Home / Week Off.
+  // Always lands as Pending; the team lead changes Status in the sheet.
+  submitLeave: function (p) {
+    const lock = LockService.getScriptLock();
+    lock.waitLock(15000);
+    try {
+      const res = resolveEmployee_(p.email);
+      if (res.error) throw new Error(res.error);
+      const emp = res.emp;
+      const email = String(emp.email).trim().toLowerCase();
+      const code = String(p.type || '').toUpperCase();
+      if (!LEAVE_TYPES[code]) throw new Error('Choose what you are marking: Leave, Half Day, Unpaid Leave, Work From Home or Week Off.');
+      const dateKey = String(p.date || '').trim();
+      if (!isRealDateKey_(dateKey)) throw new Error('Pick a valid date.');
+
+      const now = new Date();
+      const todayKey = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      const days = Math.round((parseYyyyMmDd_(dateKey) - parseYyyyMmDd_(todayKey)) / 86400000);
+      if (days < -LEAVE_PAST_DAYS) throw new Error('You can mark a day up to ' + LEAVE_PAST_DAYS + ' days back. Ask your team lead for anything older.');
+      if (days > LEAVE_FUTURE_DAYS) throw new Error('You can mark a day up to ' + LEAVE_FUTURE_DAYS + ' days ahead.');
+
+      const rows = readLeave_();
+      const requestId = String(p.requestId || '').slice(0, 64);
+      // The reply to an earlier attempt of this same submit got lost: it is already saved.
+      const prior = requestId ? rows.filter(function (r) { return r.id === requestId && r.email === email; })[0] : null;
+      if (prior) return { success: true, duplicate: true, request: clientLeave_(prior) };
+
+      const clash = rows.filter(function (r) {
+        return r.email === email && r.date === dateKey && (r.status === 'Pending' || r.status === 'Approved');
+      })[0];
+      if (clash) throw new Error('You already have ' + clash.type + ' on ' + dateKey + ' (' + clash.status + '). Cancel it first to change it.');
+
+      const id = requestId || ('L' + now.getTime().toString(36));
+      const note = cleanNote_(p.note);
+      const sh = getLeaveSheet_();
+      sh.appendRow([id, now, emp.empId, emp.name, emp.email, parseYyyyMmDd_(dateKey), LEAVE_TYPES[code], note, 'Pending', '', '']);
+      try {
+        const last = sh.getLastRow();
+        sh.getRange(last, LEAVE_COL.submitted).setNumberFormat('dd/MMM/yyyy HH:mm');
+        sh.getRange(last, LEAVE_COL.date).setNumberFormat('dd/MMM/yyyy');
+      } catch (e) { /* cosmetic only */ }
+      return { success: true, request: clientLeave_({ id: id, date: dateKey, code: code, type: LEAVE_TYPES[code], note: note, status: 'Pending', submittedAt: now.toISOString() }) };
+    } catch (err) {
+      return { success: false, message: err.message };
+    } finally {
+      lock.releaseLock();
+    }
+  },
+  // Withdraws a request that is still Pending. Safe to repeat.
+  cancelLeave: function (p) {
+    const lock = LockService.getScriptLock();
+    lock.waitLock(15000);
+    try {
+      const res = resolveEmployee_(p.email);
+      if (res.error) throw new Error(res.error);
+      const email = String(res.emp.email).trim().toLowerCase();
+      const id = String(p.id || '');
+      const row = readLeave_().filter(function (r) { return r.id === id && r.email === email; })[0];
+      if (!row) throw new Error('That request was not found.');
+      if (row.status === 'Cancelled') return { success: true, request: clientLeave_(row) };
+      if (row.status !== 'Pending') throw new Error('Only a pending request can be cancelled. Ask your team lead to change one that is already ' + row.status.toLowerCase() + '.');
+      const sh = getLeaveSheet_();
+      sh.getRange(row.rowNumber, LEAVE_COL.status).setValue('Cancelled');
+      sh.getRange(row.rowNumber, LEAVE_COL.decidedBy, 1, 2).setValues([[res.emp.name + ' (self)', new Date()]]);
+      return { success: true, request: clientLeave_(Object.assign({}, row, { status: 'Cancelled' })) };
     } catch (err) {
       return { success: false, message: err.message };
     } finally {
@@ -342,6 +424,8 @@ function initializeSheets() {
                   'Net Hours (this month)', 'Avg Hours/Day']);
     sh.getRange(1, 1, 1, 7).setFontWeight('bold');
   }
+
+  getLeaveSheet_();
 
   SpreadsheetApp.getUi().alert('Setup complete. Fill in Settings (office coordinates) and Employee Master before sharing the app link.');
 }
@@ -868,6 +952,84 @@ const EVENT_LABEL = {
   TEA_START: 'Started Tea Break', TEA_END: 'Ended Tea Break',
   BIO_START: 'Started Bio Break', BIO_END: 'Ended Bio Break'
 };
+
+// ---------- Leave & half-day requests ----------
+// One row per request in the "Leave Requests" tab (created on first use). The
+// advisor sees and cancels their own; the team lead approves by changing Status.
+const LEAVE_TYPES = { L: 'Leave', HD: 'Half Day', UP: 'Unpaid Leave', WFH: 'Work From Home', WO: 'Week Off' };
+const LEAVE_HEADERS = ['Request ID', 'Submitted At', 'Emp ID', 'Employee Name', 'Email', 'Date', 'Type', 'Note', 'Status', 'Decided By', 'Decided At'];
+const LEAVE_STATUSES = ['Pending', 'Approved', 'Rejected', 'Cancelled'];
+const LEAVE_COL = { id: 1, submitted: 2, empId: 3, name: 4, email: 5, date: 6, type: 7, note: 8, status: 9, decidedBy: 10, decidedAt: 11 };
+const LEAVE_PAST_DAYS = 7;
+const LEAVE_FUTURE_DAYS = 180;
+
+function getLeaveSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(SHEET_LEAVE);
+  if (sh) return sh;
+  sh = ss.insertSheet(SHEET_LEAVE);
+  sh.appendRow(LEAVE_HEADERS);
+  sh.getRange(1, 1, 1, LEAVE_HEADERS.length).setFontWeight('bold');
+  sh.setFrozenRows(1);
+  try { // admins pick a status from a list instead of typing one
+    sh.getRange(2, LEAVE_COL.status, 1000, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(LEAVE_STATUSES, true).build());
+  } catch (e) { /* cosmetic only */ }
+  return sh;
+}
+
+// Dates are stored as real dates but may also have been typed as text by an admin.
+function leaveDateKey_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(v || '').trim());
+  return m ? m[1] : '';
+}
+function leaveStatus_(v) {
+  const lower = String(v || '').trim().toLowerCase();
+  for (let i = 0; i < LEAVE_STATUSES.length; i++) if (LEAVE_STATUSES[i].toLowerCase() === lower) return LEAVE_STATUSES[i];
+  return 'Pending';
+}
+function leaveCodeForLabel_(label) {
+  const lower = String(label || '').trim().toLowerCase();
+  for (const code in LEAVE_TYPES) if (LEAVE_TYPES[code].toLowerCase() === lower) return code;
+  return '';
+}
+function readLeave_() {
+  const data = getLeaveSheet_().getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    if (!r[0]) continue;
+    out.push({
+      rowNumber: i + 1,
+      id: String(r[0]),
+      submittedAt: r[1] instanceof Date ? r[1].toISOString() : String(r[1] || ''),
+      empId: String(r[2]),
+      name: String(r[3]),
+      email: String(r[4]).trim().toLowerCase(),
+      date: leaveDateKey_(r[5]),
+      type: String(r[6]),
+      code: leaveCodeForLabel_(r[6]),
+      note: String(r[7] || ''),
+      status: leaveStatus_(r[8])
+    });
+  }
+  return out;
+}
+function clientLeave_(r) {
+  return { id: r.id, date: r.date, code: r.code, type: r.type, note: r.note, status: r.status, submittedAt: r.submittedAt };
+}
+function isRealDateKey_(key) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key));
+  if (!m) return false;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return d.getFullYear() === Number(m[1]) && d.getMonth() === Number(m[2]) - 1 && d.getDate() === Number(m[3]);
+}
+// One line, capped, and never readable as a formula (=, +, -, @ at the start).
+function cleanNote_(v) {
+  let t = String(v || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 200);
+  if (/^[=+\-@]/.test(t)) t = "'" + t;
+  return t;
+}
 
 // ---------- Monthly Summary ----------
 function countWorkingDaysSoFar_(weeklyOffName, refDate) {

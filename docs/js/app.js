@@ -48,6 +48,12 @@ let STATE_RECHECK = null;
 // The screen already shows the expected result; further taps wait so two
 // requests can't reach the server out of order.
 let ACTION_IN_FLIGHT = false;
+// The advisor's own leave / half-day requests (third card on the advisor screen).
+let LEAVE = null;
+let LEAVE_ERROR = null;
+let LEAVE_BUSY = false;
+let LEAVE_MSG = null;
+let LEAVE_DRAFT = { date: '', type: 'L', note: '' };
 let ACTIVE_TAB = 'me';
 let TEAM = null;
 let TEAM_ERROR = null;
@@ -77,27 +83,25 @@ const BREAK_LABEL = { LUNCH: 'Lunch Break', TEA: 'Tea Break', BIO: 'Bio Break' }
 const EVENT_DOT = { PUNCH_IN: 'ed-in', PUNCH_OUT: 'ed-out', LUNCH_START: 'ed-start', TEA_START: 'ed-start', BIO_START: 'ed-start', LUNCH_END: 'ed-end', TEA_END: 'ed-end', BIO_END: 'ed-end' };
 const LIVE_STATUSES = ['Working', 'Lunch Break', 'Tea Break', 'Bio Break'];
 
-// Team Status row order: Working first, then Present, then anyone on a
-// break, then everything else (Late, Half Day, WO, Holiday, Not Started,
-// roster codes, …) in whatever order the server returned it — sort() is
-// stable, so ties don't get reshuffled on every 20s poll.
-const STATUS_SORT_RANK = { Working: 0, Present: 1, 'Lunch Break': 2, 'Tea Break': 2, 'Bio Break': 2 };
-function statusSortRank_(status) {
-  return Object.prototype.hasOwnProperty.call(STATUS_SORT_RANK, status) ? STATUS_SORT_RANK[status] : 3;
+// One order for every "who is doing what" table (Today's Summary / Team Status
+// and the Day End Report), so they always read the same way: people at work
+// first (working, present, on a break, late, planned-present), then Work From
+// Home, Week Off, Half Day, Holiday, Leave, Unpaid Leave, and anything else
+// last. Both the Daily Log words ("Half Day") and the Roster codes ("HD") are
+// listed. Rows within one status keep the order the server sent — sort() is
+// stable, so nothing reshuffles on every 20s poll.
+const STATUS_RANK = {
+  'Working': 0, 'Present': 1, 'Lunch Break': 2, 'Tea Break': 2, 'Bio Break': 2, 'Late': 3, 'P': 4,
+  'WFH': 5, 'WO': 6, 'Half Day': 7, 'HD': 7, 'Holiday': 8, 'L': 9, 'UP': 10
+};
+const STATUS_RANK_OTHER = 11;
+function statusRank_(status) {
+  return Object.prototype.hasOwnProperty.call(STATUS_RANK, status) ? STATUS_RANK[status] : STATUS_RANK_OTHER;
 }
 function sortByStatus_(employees) {
-  return employees.slice().sort(function (a, b) { return statusSortRank_(a.status) - statusSortRank_(b.status); });
+  return employees.slice().sort(function (a, b) { return statusRank_(a.status) - statusRank_(b.status); });
 }
-
-// Day End Report row order: Present, then Late, then WO, then L, then
-// everything else (Half Day, UP, Holiday, Absent, Not Started, …).
-const DAY_END_SORT_RANK = { Present: 0, Late: 1, WO: 2, L: 3 };
-function dayEndSortRank_(status) {
-  return Object.prototype.hasOwnProperty.call(DAY_END_SORT_RANK, status) ? DAY_END_SORT_RANK[status] : 4;
-}
-function sortByDayEndStatus_(employees) {
-  return employees.slice().sort(function (a, b) { return dayEndSortRank_(a.status) - dayEndSortRank_(b.status); });
-}
+function statusPillClass_(status) { return 'st-' + String(status || '').replace(/\s+/g, ''); }
 
 function rosterCodeClass(code) {
   const c = String(code || '').trim();
@@ -273,6 +277,7 @@ function boot() {
     userLoadSeq++;
     resetSessionData_();
     if (!user) {
+      setBaseDataFooter_(false);
       clearCachedUsers_();
       cacheClearAll();
       renderSignIn(errorCode === 'unauthorized_domain' ? 'Only ' + ALLOWED_DOMAINS_TEXT + ' accounts are allowed.' : null);
@@ -291,6 +296,7 @@ function resetSessionData_() {
   STATE = freshState_(); STATE_LOADED = false; STATE_LOAD_ERROR = null;
   STATE_PENDING_NOTE = null; STATE_RECHECK = null;
   ACTION_IN_FLIGHT = false;
+  LEAVE = null; LEAVE_ERROR = null; LEAVE_BUSY = false; LEAVE_MSG = null; LEAVE_DRAFT = { date: '', type: 'L', note: '' };
 }
 
 // Paints the last-seen data before the live requests answer. Only fills what
@@ -307,6 +313,7 @@ function hydrateFromCache_() {
     if (s) { STATE = s; STATE_LOADED = true; STATE_LOAD_ERROR = null; }
   }
   if (!TEAM_ROSTER) TEAM_ROSTER = cacheGet(email, 'roster:' + TEAM_ROSTER_OFFSET);
+  if (!IS_MANAGER && !LEAVE) LEAVE = cacheGet(email, 'leave');
 }
 
 // A saved Day End Report is trustworthy to paint if it's today's report saved
@@ -378,6 +385,15 @@ function onFatal(err) {
   document.getElementById('retryBtn').addEventListener('click', loadCurrentUser);
 }
 
+// "Base data" link at the foot of the page — signed-in people only.
+function setBaseDataFooter_(show) {
+  const foot = document.getElementById('pageFoot');
+  if (!foot) return;
+  const link = document.getElementById('baseDataLink');
+  if (show && link && CONFIG.BASE_DATA_URL) link.href = CONFIG.BASE_DATA_URL;
+  foot.hidden = !show || !CONFIG.BASE_DATA_URL;
+}
+
 function renderMobileBlocked() {
   document.getElementById('app').innerHTML =
     '<div class="narrow"><div class="card" style="text-align:center;padding:44px 24px;">' +
@@ -398,6 +414,7 @@ function onUser(res) {
       '<div class="card"><h1>Access denied</h1><div class="status err">' + res.error + '</div>' +
       '<button id="signOutBtn" style="margin-top:14px;">Sign out</button></div>';
     document.getElementById('signOutBtn').addEventListener('click', function () { signOutUser(); });
+    setBaseDataFooter_(false);
     return;
   }
   EMP = res.emp;
@@ -413,14 +430,17 @@ function onUser(res) {
   wireThemeToggle();
   if (!IS_MANAGER && isMobileOrTablet_()) {
     renderMobileBlocked();
+    setBaseDataFooter_(false);
     return;
   }
+  setBaseDataFooter_(true);
   hydrateFromCache_();
   renderShell();
   if (!IS_MANAGER) {
     refreshDayState();
     requestLocation();
     loadTeamRoster();
+    loadLeave_();
   }
 }
 
@@ -538,9 +558,18 @@ function renderMe() {
     html += '<div class="status err">You must be within office range to punch in/out or take a break.</div>';
   }
   html += '<div id="msg"></div></div>';
+  html += renderLeaveCard_();
 
+  const active = document.activeElement;
+  const focusId = active && /^leave(Date|Type|Note)$/.test(active.id) ? active.id : null;
+  const caret = focusId && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
   body.innerHTML = html;
   wireRosterNav();
+  wireLeaveCard_();
+  if (focusId) {
+    const again = document.getElementById(focusId);
+    if (again) { again.focus(); if (caret && again.setSelectionRange) { try { again.setSelectionRange(caret[0], caret[1]); } catch (_) {} } }
+  }
   const stateRetryBtn = document.getElementById('stateRetryBtn');
   if (stateRetryBtn) stateRetryBtn.addEventListener('click', function () {
     STATE_LOAD_ERROR = null;
@@ -724,6 +753,161 @@ window.addEventListener('beforeunload', function (e) {
   e.returnValue = '';
 });
 
+// ---------- Leave & half day (the advisor's third card) ----------
+// Advisors mark a day here; it lands as a Pending row in the Leave Requests
+// tab, where the team lead approves it. Each submit carries a requestId, so a
+// reply lost on the way back is retried without creating a second request.
+const LEAVE_TYPES = [['L', 'Leave'], ['HD', 'Half Day'], ['UP', 'Unpaid Leave'], ['WFH', 'Work From Home'], ['WO', 'Week Off']];
+
+function esc_(v) {
+  return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function ymd_(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function dayOffsetKey_(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return ymd_(d);
+}
+// 'YYYY-MM-DD' -> 'Thu, 5 Nov', built from the parts so it can never slip a day via UTC.
+function fmtLeaveDate_(key) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ''));
+  if (!m) return esc_(key || '—');
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+}
+function sortLeave_(list) {
+  return list.slice().sort(function (a, b) {
+    return a.date === b.date ? String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')) : (a.date < b.date ? 1 : -1);
+  });
+}
+function upsertLeave_(req) {
+  const rest = (LEAVE || []).filter(function (r) { return r.id !== req.id; });
+  LEAVE = sortLeave_(rest.concat([req]));
+}
+
+function renderLeaveCard_() {
+  let html = '<div class="card"><h1>Leave &amp; Half Day</h1>' +
+    '<div class="sub">Mark a leave, half day, work from home or week off. Your team lead approves it in the Leave Requests sheet.</div>';
+  html += '<div class="leave-form">' +
+    '<label>Date<input type="date" id="leaveDate" value="' + esc_(LEAVE_DRAFT.date) + '" min="' + dayOffsetKey_(-7) + '" max="' + dayOffsetKey_(180) + '"></label>' +
+    '<label>Type<select id="leaveType">' + LEAVE_TYPES.map(function (t) {
+      return '<option value="' + t[0] + '"' + (LEAVE_DRAFT.type === t[0] ? ' selected' : '') + '>' + t[1] + '</option>';
+    }).join('') + '</select></label>' +
+    '<label class="grow">Note (optional)<input type="text" id="leaveNote" maxlength="200" placeholder="e.g. doctor appointment" value="' + esc_(LEAVE_DRAFT.note) + '"></label>' +
+    '<button id="leaveSubmit" type="button"' + (LEAVE_BUSY ? ' disabled' : '') + '>' + (LEAVE_BUSY ? 'Saving…' : 'Submit') + '</button>' +
+    '</div>';
+  html += '<div class="leave-msg">' + (LEAVE_MSG ? '<div class="status ' + (LEAVE_MSG.kind === 'ok' ? 'ok' : 'err') + '">' + esc_(LEAVE_MSG.text) + '</div>' : '') + '</div>';
+
+  if (LEAVE === null) {
+    html += LEAVE_ERROR
+      ? '<div class="status err">' + esc_(LEAVE_ERROR) + '</div><button id="leaveRetry" class="roster-nav-btn" type="button" style="margin-top:10px;">Try again</button>'
+      : '<div class="loading" style="padding:20px 0;">Loading…</div>';
+  } else if (!LEAVE.length) {
+    html += '<div class="sub" style="margin:4px 0 0;">No requests yet. Pick a date above and submit.</div>';
+  } else {
+    html += '<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Type</th><th>Note</th><th>Status</th><th></th></tr></thead><tbody>';
+    LEAVE.forEach(function (r) {
+      html += '<tr><td class="dt-name">' + fmtLeaveDate_(r.date) + '</td>' +
+        '<td><span class="rc ' + rosterCodeClass(r.code) + '">' + esc_(r.type) + '</span></td>' +
+        '<td class="leave-note">' + esc_(r.note || '—') + '</td>' +
+        '<td><span class="status-pill st-' + esc_(r.status) + '">' + esc_(r.status) + '</span></td>' +
+        '<td>' + (r.status === 'Pending' ? '<button class="leave-cancel" type="button" data-cancel-leave="' + esc_(r.id) + '">Cancel</button>' : '') + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  return html + '</div>';
+}
+
+function wireLeaveCard_() {
+  const date = document.getElementById('leaveDate');
+  const type = document.getElementById('leaveType');
+  const note = document.getElementById('leaveNote');
+  if (date) ['input', 'change'].forEach(function (ev) { date.addEventListener(ev, function () { LEAVE_DRAFT.date = date.value; }); });
+  if (type) type.addEventListener('change', function () { LEAVE_DRAFT.type = type.value; });
+  if (note) {
+    note.addEventListener('input', function () { LEAVE_DRAFT.note = note.value; });
+    note.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitLeave_(); });
+  }
+  const submit = document.getElementById('leaveSubmit');
+  if (submit) submit.addEventListener('click', submitLeave_);
+  document.querySelectorAll('[data-cancel-leave]').forEach(function (el) {
+    el.addEventListener('click', function () { cancelLeave_(el.getAttribute('data-cancel-leave')); });
+  });
+  const retry = document.getElementById('leaveRetry');
+  if (retry) retry.addEventListener('click', function () { LEAVE_ERROR = null; renderMe(); loadLeave_(); });
+}
+
+function loadLeave_() {
+  const email = CURRENT.email;
+  return api({ action: 'getMyLeave', email: email })
+    .then(function (r) {
+      LEAVE = sortLeave_(r.requests || []);
+      LEAVE_ERROR = null;
+      cacheSet(email, 'leave', LEAVE);
+      renderMe();
+    })
+    .catch(function (err) {
+      if (LEAVE === null) LEAVE_ERROR = err.message; // a saved copy on screen stays; only an empty card shows the error
+      renderMe();
+    });
+}
+
+function submitLeave_() {
+  if (LEAVE_BUSY) return;
+  if (!LEAVE_DRAFT.date) { LEAVE_MSG = { kind: 'err', text: 'Pick a date first.' }; renderMe(); return; }
+  const email = CURRENT.email;
+  const draft = Object.assign({}, LEAVE_DRAFT);
+  LEAVE_BUSY = true;
+  LEAVE_MSG = null;
+  renderMe();
+  return api({ action: 'submitLeave', email: email, date: draft.date, type: draft.type, note: draft.note, requestId: newRequestId_() })
+    .then(function (res) {
+      LEAVE_BUSY = false;
+      if (res.success) {
+        upsertLeave_(res.request);
+        cacheSet(email, 'leave', LEAVE);
+        LEAVE_DRAFT = { date: '', type: draft.type, note: '' };
+        LEAVE_MSG = { kind: 'ok', text: res.duplicate ? 'Already submitted — it is in the list below.' : 'Submitted. It stays Pending until your team lead approves it.' };
+      } else {
+        LEAVE_MSG = { kind: 'err', text: res.message };
+      }
+      renderMe();
+    })
+    .catch(function (err) {
+      LEAVE_BUSY = false;
+      LEAVE_MSG = { kind: 'err', text: err.message + ' — check the list below to see whether it was saved before trying again.' };
+      renderMe();
+      loadLeave_();
+    });
+}
+
+function cancelLeave_(id) {
+  if (LEAVE_BUSY) return;
+  const email = CURRENT.email;
+  LEAVE_BUSY = true;
+  LEAVE_MSG = null;
+  renderMe();
+  return api({ action: 'cancelLeave', email: email, id: id, requestId: newRequestId_() })
+    .then(function (res) {
+      LEAVE_BUSY = false;
+      if (res.success) {
+        upsertLeave_(res.request);
+        cacheSet(email, 'leave', LEAVE);
+        LEAVE_MSG = { kind: 'ok', text: 'Request cancelled.' };
+      } else {
+        LEAVE_MSG = { kind: 'err', text: res.message };
+      }
+      renderMe();
+    })
+    .catch(function (err) {
+      LEAVE_BUSY = false;
+      LEAVE_MSG = { kind: 'err', text: err.message + ' — check the list below to see whether it was cancelled.' };
+      renderMe();
+      loadLeave_();
+    });
+}
+
 function renderTeam() {
   if (ACTIVE_TAB !== 'team') return;
   const body = document.getElementById('tabBody');
@@ -748,7 +932,7 @@ function renderTeam() {
       (TEAM_ERROR ? ' &middot; <span style="color:var(--red);">last refresh failed, showing previous data</span>'
         : TEAM_STALE ? ' &middot; saved copy, refreshing…' : '') + '</div>';
     TEAM.employees.forEach(function (e) {
-      const cls = 'st-' + String(e.status || '').replace(/\s+/g, '');
+      const cls = statusPillClass_(e.status);
       const since = (LIVE_STATUSES.indexOf(e.status) > -1 && e.statusSince) ? ' &middot; since ' + fmtTime(e.statusSince) : '';
       html += '<div class="team-row"><div><div class="team-name">' + e.name + '</div><div class="team-sub">' + (e.department || '') +
         (e.punchIn ? ' &middot; in ' + fmtTime(e.punchIn) : '') + (e.punchOut ? ' &middot; out ' + fmtTime(e.punchOut) : '') + since + '</div></div>' +
@@ -771,7 +955,7 @@ function renderTeam() {
       '<th>Advisor</th><th>Status</th><th>Login Time</th><th>Logout Time</th><th>Total Login Time</th><th>Active/Working Time</th><th>Total Break Time</th>' +
       '</tr></thead><tbody>';
     DAY_REPORT.employees.forEach(function (e) {
-      html += '<tr><td class="dt-name">' + e.name + '</td><td>' + (e.status || '—') + '</td><td>' + fmtTime(e.punchIn) + '</td><td>' + fmtTime(e.punchOut) + '</td>' +
+      html += '<tr><td class="dt-name">' + e.name + '</td><td><span class="status-pill ' + statusPillClass_(e.status) + '">' + (e.status || '—') + '</span></td><td>' + fmtTime(e.punchIn) + '</td><td>' + fmtTime(e.punchOut) + '</td>' +
         '<td>' + fmtHours(e.gross) + '</td><td>' + fmtHours(e.netHours) + '</td><td>' + Math.round(e.totalBreak || 0) + ' min</td></tr>';
     });
     html += '</tbody></table></div>';
@@ -831,7 +1015,7 @@ function loadDayEndReport(silent) {
   }
   return api({ action: 'getDayEndReport', email: email, date: DAY_REPORT_DATE })
     .then(function (r) {
-      const report = Object.assign({}, r, { employees: sortByDayEndStatus_(r.employees) });
+      const report = Object.assign({}, r, { employees: sortByStatus_(r.employees) });
       cacheSet(email, 'dayreport:' + r.date, report);
       if (r.date !== DAY_REPORT_DATE) return; // reply for a date the user has since navigated away from
       DAY_REPORT = report;

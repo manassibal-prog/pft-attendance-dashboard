@@ -205,6 +205,7 @@ function actionEnv() {
       CURRENT: { email: 'a@wiom.in' }, IS_MANAGER: false, DAY_REPORT_DATE: '2026-10-05', TEAM_ROSTER_OFFSET: 0,
       TEAM: null, TEAM_STALE: false, TEAM_ERROR: null, RECENT_LOG: null, TEAM_ROSTER: null, TEAM_ROSTER_FRESH: false, DAY_REPORT: null,
       STATE: freshState(), STATE_LOADED: false, STATE_LOAD_ERROR: null, STATE_PENDING_NOTE: null, STATE_RECHECK: null, ACTION_IN_FLIGHT: false,
+      LEAVE: null, LEAVE_ERROR: null, LEAVE_BUSY: false, LEAVE_MSG: null, LEAVE_DRAFT: { date: '', type: 'L', note: '' },
       freshState_: freshState,
       localDay: function () { return '2026-10-05'; },
       cacheGet: function (email, name, valid) {
@@ -289,6 +290,7 @@ function actionEnv() {
       BREAK_LABEL: { LUNCH: 'Lunch Break', TEA: 'Tea Break', BIO: 'Bio Break' },
       renderRosterCard: function () { return ''; }, wireRosterNav: function () {}, fmtTime: function (v) { return v ? 'T' : '—'; },
       onAction: function () {}, refreshDayState: function () {}, breakTimerHandle: null,
+      renderLeaveCard_: function () { return ''; }, wireLeaveCard_: function () {},
       setInterval: function () { return 1; }, clearInterval: function () {},
       document: {
         getElementById: function (id) { return id === 'tabBody' ? { set innerHTML(v) { out.html = v; } } : null; },

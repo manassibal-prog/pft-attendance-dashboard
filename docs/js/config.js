@@ -24,5 +24,7 @@ export const CONFIG = {
   // never shows the visitor a Google consent screen. Access control is the
   // API_KEY below plus the allowed-domain + Employee Master check done server-side.
   API_URL: "https://script.google.com/macros/s/AKfycbz1HM_Ud45vJh_6LjWkwKHOore8igJIj95k98a9pihWsLwXo-BF69MoYoZHDGTgtO5b/exec",
-  API_KEY: "wiom-pft-roster-2026"
+  API_KEY: "wiom-pft-roster-2026",
+  // Linked as "Base data" at the foot of the page once someone is signed in.
+  BASE_DATA_URL: "https://docs.google.com/spreadsheets/d/1rJw8-OKr98ebcn5KcjnLRfxvxuhKP0nL1IOQjm-XGQI/edit?gid=1679137353#gid=1679137353"
 };
