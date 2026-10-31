@@ -192,3 +192,12 @@ button:disabled{background:var(--surface-2);color:var(--text-muted);box-shadow:n
 .page-foot[hidden]{display:none;}
 .page-foot a{color:var(--text-muted);text-decoration:none;border-bottom:1px dashed var(--border-strong);padding-bottom:1px;}
 .page-foot a:hover{color:var(--brand);border-bottom-color:var(--brand);}
+
+.count-badge{display:inline-block;margin-left:10px;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;vertical-align:middle;background:var(--amber-bg);color:var(--amber);border:1px solid rgba(250,178,25,.45);}
+.leave-actions{display:flex;gap:6px;justify-content:center;}
+.leave-approve,.leave-reject{width:auto;margin:0;padding:5px 12px;font-size:11px;text-transform:none;letter-spacing:0;border-radius:8px;border:1px solid;background:transparent;}
+.leave-approve{color:#3ddc6f;border-color:rgba(12,163,12,.55);}
+.leave-approve:hover{background:var(--green-bg);}
+.leave-reject{color:var(--text-secondary);border-color:var(--border-strong);}
+.leave-reject:hover{border-color:var(--red);color:#ff8388;background:var(--red-bg);}
+.leave-approve:disabled,.leave-reject:disabled,.leave-cancel:disabled{opacity:.45;cursor:not-allowed;}

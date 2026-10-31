@@ -213,6 +213,50 @@ const ACTIONS = {
       lock.releaseLock();
     }
   },
+  // Team leads: every pending request, plus anything dated in the last 30 days or later.
+  // Pending first (soonest day first), then the rest newest day first.
+  getLeaveRequests: function (p) {
+    requireManager_(p.email);
+    const tz = Session.getScriptTimeZone();
+    const cutoff = Utilities.formatDate(new Date(parseYyyyMmDd_(Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd')).getTime() - LEAVE_DECIDED_WINDOW_DAYS * 86400000), tz, 'yyyy-MM-dd');
+    const list = readLeave_()
+      .filter(function (r) { return r.status === 'Pending' || r.date >= cutoff; })
+      .sort(function (a, b) {
+        const ap = a.status === 'Pending', bp = b.status === 'Pending';
+        if (ap !== bp) return ap ? -1 : 1;
+        if (a.date === b.date) return 0;
+        return ap ? (a.date < b.date ? -1 : 1) : (a.date < b.date ? 1 : -1);
+      })
+      .map(managerLeave_);
+    return { requests: list.slice(0, 300) };
+  },
+  // Approve, reject, or reopen (back to Pending) a request. Safe to repeat.
+  decideLeave: function (p) {
+    const lock = LockService.getScriptLock();
+    lock.waitLock(15000);
+    try {
+      const res = resolveEmployee_(p.email);
+      if (res.error) throw new Error(res.error);
+      if (!isManager_(res.emp)) throw new Error('Only team leads can approve or reject leave.');
+      const decision = String(p.decision || '');
+      if (LEAVE_DECISIONS.indexOf(decision) < 0) throw new Error('Choose Approve, Reject or Reopen.');
+      const row = readLeave_().filter(function (r) { return r.id === String(p.id || ''); })[0];
+      if (!row) throw new Error('That request was not found.');
+      if (row.email === String(res.emp.email).trim().toLowerCase()) throw new Error('You can\u2019t decide your own request. Ask another team lead.');
+      if (row.status === 'Cancelled') throw new Error('The advisor cancelled this request, so there is nothing to decide.');
+      if (row.status === decision) return { success: true, request: managerLeave_(row) };
+      const now = new Date();
+      const reopened = decision === 'Pending';
+      const sh = getLeaveSheet_();
+      sh.getRange(row.rowNumber, LEAVE_COL.status).setValue(decision);
+      sh.getRange(row.rowNumber, LEAVE_COL.decidedBy, 1, 2).setValues([[reopened ? '' : res.emp.name, reopened ? '' : now]]);
+      return { success: true, request: managerLeave_(Object.assign({}, row, { status: decision, decidedBy: reopened ? '' : res.emp.name, decidedAt: reopened ? '' : now.toISOString() })) };
+    } catch (err) {
+      return { success: false, message: err.message };
+    } finally {
+      lock.releaseLock();
+    }
+  },
   getTeamRoster: function (p) {
     const res = resolveEmployee_(p.email);
     if (res.error) throw new Error(res.error);
@@ -229,12 +273,13 @@ const ACTIONS = {
     const employees = orderLikeRoster_(listActiveAdvisors_(), grid, dateKeys);
     const logIndex = dailyLogIndexForDates_(dateKeys);
 
+    const approved = approvedLeaveCodes_();
     const rows = rosterCodesForWeek_(grid, employees, dateKeys).map(function (r) {
       return {
         empId: r.empId, name: r.name,
         codes: r.codes.map(function (raw, i) {
           const logRow = logIndex[r.empId + '|' + dateKeys[i]];
-          return shiftDisplayCode_(raw, logRow, days[i].date < todayMidnight) || '—';
+          return approved[r.empId + '|' + dateKeys[i]] || shiftDisplayCode_(raw, logRow, days[i].date < todayMidnight) || '—';
         })
       };
     });
@@ -279,6 +324,8 @@ const ACTIONS = {
 
     const employees = listActiveAdvisors_();
     const rosterGrid = getRosterGrid_();
+    const approved = approvedLeaveCodes_();
+    const todayKey = formatDdMmmYyyy_(now);
 
     const results = employees.map(function (e) {
       const since = lastEventAt[e.empId] ? lastEventAt[e.empId].toISOString() : null;
@@ -296,7 +343,7 @@ const ACTIONS = {
       return {
         empId: e.empId, name: e.name, department: e.department,
         punchIn: null, punchOut: null, lunch: 0, tea: 0, bio: 0, totalBreak: 0, gross: '',
-        netHours: '', lateBy: 0, status: rosterCode || 'Not Started', statusSince: since
+        netHours: '', lateBy: 0, status: approved[e.empId + '|' + todayKey] || rosterCode || 'Not Started', statusSince: since
       };
     });
 
@@ -326,6 +373,8 @@ const ACTIONS = {
     const now = new Date();
     const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const isPast = targetDate < todayMidnight;
+    const approved = approvedLeaveCodes_();
+    const targetKey = formatDdMmmYyyy_(targetDate);
 
     const results = employees.map(function (e) {
       const row = rowsByEmp[e.empId];
@@ -338,7 +387,7 @@ const ACTIONS = {
         };
       }
       const raw = rosterCodeFromGrid_(rosterGrid, e.name, targetDate, e.weeklyOff);
-      const status = shiftDisplayCode_(raw, null, isPast) || raw || (isPast ? 'Absent' : 'Not Started');
+      const status = approved[e.empId + '|' + targetKey] || shiftDisplayCode_(raw, null, isPast) || raw || (isPast ? 'Absent' : 'Not Started');
       return { empId: e.empId, name: e.name, punchIn: null, punchOut: null, totalBreak: 0, gross: '', netHours: '', status: status };
     });
 
@@ -1010,7 +1059,9 @@ function readLeave_() {
       type: String(r[6]),
       code: leaveCodeForLabel_(r[6]),
       note: String(r[7] || ''),
-      status: leaveStatus_(r[8])
+      status: leaveStatus_(r[8]),
+      decidedBy: String(r[9] || ''),
+      decidedAt: r[10] instanceof Date ? r[10].toISOString() : String(r[10] || '')
     });
   }
   return out;
@@ -1018,6 +1069,29 @@ function readLeave_() {
 function clientLeave_(r) {
   return { id: r.id, date: r.date, code: r.code, type: r.type, note: r.note, status: r.status, submittedAt: r.submittedAt };
 }
+// The team lead's view of a request: who asked, and who decided it and when.
+function managerLeave_(r) {
+  return { id: r.id, empId: r.empId, name: r.name, date: r.date, code: r.code, type: r.type, note: r.note, status: r.status,
+           submittedAt: r.submittedAt, decidedBy: r.decidedBy, decidedAt: r.decidedAt };
+}
+
+// 'empId|dd/MMM/yyyy' -> roster code for every APPROVED request. The Roster
+// grid, Team Status and the Day End Report show it in place of the Roster
+// tab's own code (that tab is never written to). Display only: it does not
+// touch today's office-range rule, which still follows the Roster tab alone.
+function approvedLeaveCodes_() {
+  const out = {};
+  try {
+    readLeave_().forEach(function (r) {
+      if (r.status === 'Approved' && r.code && r.date) out[r.empId + '|' + formatDdMmmYyyy_(parseYyyyMmDd_(r.date))] = r.code;
+    });
+  } catch (e) { /* the views must still render if the leave tab cannot be read */ }
+  return out;
+}
+
+const LEAVE_DECISIONS = ['Approved', 'Rejected', 'Pending'];
+const LEAVE_DECIDED_WINDOW_DAYS = 30;
+
 function isRealDateKey_(key) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key));
   if (!m) return false;

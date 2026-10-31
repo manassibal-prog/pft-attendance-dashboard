@@ -54,6 +54,12 @@ let LEAVE_ERROR = null;
 let LEAVE_BUSY = false;
 let LEAVE_MSG = null;
 let LEAVE_DRAFT = { date: '', type: 'L', note: '' };
+// The team lead's view of everyone's requests (Leave Requests card on the manager screen).
+let LEAVE_REQS = null;
+let LEAVE_REQS_ERROR = null;
+let LEAVE_REQS_BUSY = false;
+let LEAVE_REQS_MSG = null;
+let leaveReqPollCount = 0;
 let ACTIVE_TAB = 'me';
 let TEAM = null;
 let TEAM_ERROR = null;
@@ -297,6 +303,7 @@ function resetSessionData_() {
   STATE_PENDING_NOTE = null; STATE_RECHECK = null;
   ACTION_IN_FLIGHT = false;
   LEAVE = null; LEAVE_ERROR = null; LEAVE_BUSY = false; LEAVE_MSG = null; LEAVE_DRAFT = { date: '', type: 'L', note: '' };
+  LEAVE_REQS = null; LEAVE_REQS_ERROR = null; LEAVE_REQS_BUSY = false; LEAVE_REQS_MSG = null; leaveReqPollCount = 0;
 }
 
 // Paints the last-seen data before the live requests answer. Only fills what
@@ -307,6 +314,7 @@ function hydrateFromCache_() {
   if (IS_MANAGER) {
     if (!TEAM) { const t = cacheGet(email, 'team'); if (t) { TEAM = t; TEAM_STALE = true; } }
     if (!RECENT_LOG) RECENT_LOG = cacheGet(email, 'recent');
+    if (!LEAVE_REQS) LEAVE_REQS = cacheGet(email, 'leavereqs');
     if (!DAY_REPORT) DAY_REPORT = cacheGet(email, 'dayreport:' + DAY_REPORT_DATE, reportCacheValid_(DAY_REPORT_DATE));
   } else if (!STATE_LOADED) {
     const s = cacheGet(email, 'daystate');
@@ -908,6 +916,109 @@ function cancelLeave_(id) {
     });
 }
 
+// ---------- Leave requests (the team lead's card) ----------
+// Pending first (soonest day first), then decided ones newest day first — the
+// same order the server sends, kept here so an update lands in the right place.
+function sortLeaveRequests_(list) {
+  return list.slice().sort(function (a, b) {
+    const ap = a.status === 'Pending', bp = b.status === 'Pending';
+    if (ap !== bp) return ap ? -1 : 1;
+    if (a.date === b.date) return 0;
+    return ap ? (a.date < b.date ? -1 : 1) : (a.date < b.date ? 1 : -1);
+  });
+}
+
+function renderLeaveRequestsCard_() {
+  const pending = LEAVE_REQS ? LEAVE_REQS.filter(function (r) { return r.status === 'Pending'; }).length : 0;
+  let html = '<div class="card"><h1>Leave Requests' + (pending ? '<span class="count-badge">' + pending + ' pending</span>' : '') + '</h1>' +
+    '<div class="sub">Approve or reject leave, half day, work from home and week off. Approved ones show in the roster and the reports.</div>';
+  html += '<div class="leave-msg">' + (LEAVE_REQS_MSG ? '<div class="status ' + (LEAVE_REQS_MSG.kind === 'ok' ? 'ok' : 'err') + '">' + esc_(LEAVE_REQS_MSG.text) + '</div>' : '') + '</div>';
+
+  if (LEAVE_REQS === null) {
+    html += LEAVE_REQS_ERROR
+      ? '<div class="status err">' + esc_(LEAVE_REQS_ERROR) + '</div><button id="leaveReqRetry" class="roster-nav-btn" type="button" style="margin-top:10px;">Try again</button>'
+      : '<div class="loading" style="padding:20px 0;">Loading…</div>';
+  } else if (!LEAVE_REQS.length) {
+    html += '<div class="sub" style="margin:4px 0 0;">No leave requests right now.</div>';
+  } else {
+    const off = LEAVE_REQS_BUSY ? ' disabled' : '';
+    html += '<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Advisor</th><th>Date</th><th>Type</th><th>Note</th><th>Status</th><th></th></tr></thead><tbody>';
+    LEAVE_REQS.forEach(function (r) {
+      const id = esc_(r.id);
+      let actions = '';
+      if (r.status === 'Pending') {
+        actions = '<button class="leave-approve" type="button" data-decide="' + id + '" data-decision="Approved"' + off + '>Approve</button>' +
+                  '<button class="leave-reject" type="button" data-decide="' + id + '" data-decision="Rejected"' + off + '>Reject</button>';
+      } else if (r.status === 'Approved' || r.status === 'Rejected') {
+        actions = '<button class="leave-cancel" type="button" data-decide="' + id + '" data-decision="Pending"' + off + '>Reopen</button>';
+      }
+      html += '<tr><td class="dt-name">' + esc_(r.name) + '</td>' +
+        '<td>' + fmtLeaveDate_(r.date) + '</td>' +
+        '<td><span class="rc ' + rosterCodeClass(r.code) + '">' + esc_(r.type) + '</span></td>' +
+        '<td class="leave-note">' + esc_(r.note || '—') + '</td>' +
+        '<td><span class="status-pill st-' + esc_(r.status) + '">' + esc_(r.status) + '</span>' +
+          (r.decidedBy && r.status !== 'Pending' ? '<div class="team-sub">by ' + esc_(r.decidedBy) + '</div>' : '') + '</td>' +
+        '<td><div class="leave-actions">' + actions + '</div></td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  return html + '</div>';
+}
+
+function wireLeaveRequests_() {
+  document.querySelectorAll('[data-decide]').forEach(function (el) {
+    el.addEventListener('click', function () { decideLeave_(el.getAttribute('data-decide'), el.getAttribute('data-decision')); });
+  });
+  const retry = document.getElementById('leaveReqRetry');
+  if (retry) retry.addEventListener('click', function () { LEAVE_REQS_ERROR = null; renderTeam(); loadLeaveRequests_(); });
+}
+
+function loadLeaveRequests_() {
+  const email = CURRENT.email;
+  return api({ action: 'getLeaveRequests', email: email })
+    .then(function (r) {
+      LEAVE_REQS = sortLeaveRequests_(r.requests || []);
+      LEAVE_REQS_ERROR = null;
+      cacheSet(email, 'leavereqs', LEAVE_REQS);
+      renderTeam();
+    })
+    .catch(function (err) {
+      if (LEAVE_REQS === null) LEAVE_REQS_ERROR = err.message; // a saved list on screen stays; only an empty card shows the error
+      renderTeam();
+    });
+}
+
+// Approve / reject / reopen. The request carries a requestId so a reply lost on
+// the way back is retried safely; the decision itself is also safe to repeat.
+function decideLeave_(id, decision) {
+  if (LEAVE_REQS_BUSY) return;
+  const email = CURRENT.email;
+  const done = { Approved: 'Approved', Rejected: 'Rejected', Pending: 'Reopened' }[decision] || decision;
+  LEAVE_REQS_BUSY = true;
+  LEAVE_REQS_MSG = null;
+  renderTeam();
+  return api({ action: 'decideLeave', email: email, id: id, decision: decision, requestId: newRequestId_() })
+    .then(function (res) {
+      LEAVE_REQS_BUSY = false;
+      if (res.success) {
+        const q = res.request;
+        LEAVE_REQS = sortLeaveRequests_((LEAVE_REQS || []).map(function (r) { return r.id === q.id ? q : r; }));
+        cacheSet(email, 'leavereqs', LEAVE_REQS);
+        LEAVE_REQS_MSG = { kind: 'ok', text: done + ' ' + q.name + '’s ' + q.type + ' on ' + fmtLeaveDate_(q.date) + '.' };
+        loadTeamRoster(); // the grid shows approved leave; fetch it again now
+      } else {
+        LEAVE_REQS_MSG = { kind: 'err', text: res.message };
+      }
+      renderTeam();
+    })
+    .catch(function (err) {
+      LEAVE_REQS_BUSY = false;
+      LEAVE_REQS_MSG = { kind: 'err', text: err.message + ' — check the list to see whether it went through.' };
+      renderTeam();
+      loadLeaveRequests_();
+    });
+}
+
 function renderTeam() {
   if (ACTIVE_TAB !== 'team') return;
   const body = document.getElementById('tabBody');
@@ -962,7 +1073,10 @@ function renderTeam() {
   }
   html += '</div>';
 
-  // 4. Recent activity.
+  // 4. Leave requests awaiting a decision (and recent decisions).
+  html += renderLeaveRequestsCard_();
+
+  // 5. Recent activity.
   html += '<div class="card"><h1>Recent Activity</h1><div class="sub">Last ' + (RECENT_LOG ? RECENT_LOG.length : 0) + ' punch/break events</div>';
   if (!RECENT_LOG) {
     html += '<div class="loading">Loading…</div>';
@@ -978,6 +1092,7 @@ function renderTeam() {
 
   body.innerHTML = html;
   wireRosterNav();
+  wireLeaveRequests_();
   const dateInput = document.getElementById('reportDate');
   if (dateInput) dateInput.addEventListener('change', function () { DAY_REPORT_DATE = dateInput.value; loadDayEndReport(); });
   const reportTodayBtn = document.getElementById('reportToday');
@@ -1054,6 +1169,8 @@ function loadTeam() {
   // first doesn't count as fetched). Nav clicks (loadTeamRoster) fetch on
   // demand separately.
   if (!TEAM_ROSTER_FRESH) loadTeamRoster();
+  // Leave requests change slowly: with the first poll, then about every 3 minutes (and right after any decision).
+  if (leaveReqPollCount++ % 9 === 0) jobs.push(loadLeaveRequests_());
   // Same for the Day End Report: refresh on every poll only while looking at
   // today (still filling in); a past date is already final, no need to re-fetch.
   if (!DAY_REPORT || DAY_REPORT_DATE === todayYyyyMmDd_()) jobs.push(loadDayEndReport(!!DAY_REPORT));

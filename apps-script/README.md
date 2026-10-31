@@ -42,7 +42,12 @@ GET /exec?key=<API_KEY>&action=<actionName>&email=<caller>&...params
 ```
 
 Actions: `getCurrentUser`, `checkLocation`, `getDayState`, `recordEvent`,
-`getTeamRoster`, `getMyMonthRoster`, `getTeamStatus`, `getRecentLog`. See the
+`getTeamRoster`, `getTeamStatus`, `getDayEndReport`, `getRecentLog`; leave:
+`getMyLeave`, `submitLeave`, `cancelLeave` (any employee, their own) and
+`getLeaveRequests`, `decideLeave` (team leads). Leave requests live in the
+"Leave Requests" tab (created on first use); an *Approved* request is shown in
+the Roster grid, Team Status and Day End Report in place of the Roster tab's
+code — display only, the office-range rule still follows the Roster tab. See the
 `ACTIONS` map in [`Code.gs`](Code.gs) for parameters and return shapes.
 Responses are always JSON; errors come back as `{ "error": "..." }` rather
 than an HTTP error status.
