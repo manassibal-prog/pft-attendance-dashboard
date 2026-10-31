@@ -76,10 +76,10 @@ const count = (html, re) => (html.match(re) || []).length;
   await t('shows who asked, the day, the type pill (Leave / Unpaid Leave neon via rc-L), the note, and who decided', async function () {
     const html = makeEnv({ LEAVE_REQS: [
       req({ id: 'a', name: 'Asha', code: 'UP', type: 'Unpaid Leave', note: 'family', status: 'Approved', decidedBy: 'Priya' }),
-      req({ id: 'b', name: 'Ben', code: 'WFH', type: 'Work From Home', status: 'Pending' })
+      req({ id: 'b', name: 'Ben', code: 'WO', type: 'Week Off', status: 'Pending' })
     ] }).sb.renderLeaveRequestsCard_();
     assertEq(html.indexOf('>Asha<') > -1 && html.indexOf('>Ben<') > -1, true);
-    assertEq(html.indexOf('<span class="rc rc-L">Unpaid Leave</span>') > -1 && html.indexOf('<span class="rc rc-WFH">Work From Home</span>') > -1, true);
+    assertEq(html.indexOf('<span class="rc rc-L">Unpaid Leave</span>') > -1 && html.indexOf('<span class="rc rc-WO">Week Off</span>') > -1, true);
     assertEq(html.indexOf('by Priya') > -1, true);
     assertEq(html.indexOf('family') > -1, true);
   });

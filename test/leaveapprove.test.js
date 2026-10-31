@@ -153,7 +153,7 @@ t('the list puts pending first (soonest day first), then decided newest first, w
   const env = makeEnv();
   env.submit('asha@wiom.in', 'L', env.dayOf(3), 'late');
   env.submit('ben@wiom.in', 'HD', env.dayOf(1), 'soon');
-  env.submit('asha@wiom.in', 'WFH', env.dayOf(5), 'decided');
+  env.submit('asha@wiom.in', 'WO', env.dayOf(5), 'decided');
   env.decide('priya@wiom.in', 'decided', 'Approved');
   // two requests from long ago: one still pending (must stay), one decided (must drop)
   const old = new Date(); old.setDate(old.getDate() - 45);
@@ -179,11 +179,11 @@ t('Roster grid: an APPROVED request shows in the right person\'s cell, over what
 
 t('Roster grid: every type is shown as its own code', () => {
   const env = makeEnv();
-  [['L', 0], ['HD', 1], ['UP', 2], ['WFH', 3], ['WO', 4]].forEach(([code, d]) => {
+  [['L', 0], ['HD', 1], ['UP', 2], ['WO', 3]].forEach(([code, d]) => {
     env.submit('asha@wiom.in', code, env.dayOf(d), 'x' + code);
     env.decide('priya@wiom.in', 'x' + code, 'Approved');
   });
-  assertEq(idx(env, 'Asha').codes.slice(0, 5), ['L', 'HD', 'UP', 'WFH', 'WO']);
+  assertEq(idx(env, 'Asha').codes.slice(0, 4), ['L', 'HD', 'UP', 'WO']);
 });
 
 t('Roster grid: pending, rejected and cancelled requests change nothing; reopening takes an approval back off', () => {
@@ -231,15 +231,22 @@ t('Day End Report: approved leave shows for that date; a day someone punched in 
   assertEq(other.Asha, 'P', 'a different day is unaffected');
 });
 
-t('approved Work From Home is display-only: today\'s office-range rule still follows the Roster tab', () => {
+t('Work From Home cannot be requested, so an approval can never touch the office-range rule', () => {
   const env = makeEnv();
   const todayIdx = env.week.findIndex((d) => d.key === env.todayKey);
-  env.submit('asha@wiom.in', 'WFH', env.dayOf(todayIdx), 'w1');
-  env.decide('priya@wiom.in', 'w1', 'Approved');
-  assertEq(idx(env, 'Asha').codes[todayIdx], 'WFH', 'shown in the grid');
+  const r = env.submit('asha@wiom.in', 'WFH', env.dayOf(todayIdx), 'w1');
+  assertEq(r.success, false);
   const state = env.A.getDayState({ email: 'asha@wiom.in' });
-  assertEq(state.requiresGeofence, true, 'but the punch-in location check is unchanged');
-  assertEq(state.rosterCode, 'P');
+  assertEq([state.requiresGeofence, state.rosterCode], [true, 'P']);
+});
+
+t("the Roster tab's own WFH day is untouched: it still skips the office-range check, and still shows in the grid", () => {
+  const env = makeEnv();
+  const todayIdx = env.week.findIndex((d) => d.key === env.todayKey);
+  env.sheets['Roster'].rows[1][10 + todayIdx] = 'WFH';            // Asha's cell for today, set by the admin in the Roster tab
+  const state = env.A.getDayState({ email: 'asha@wiom.in' });
+  assertEq([state.requiresGeofence, state.rosterCode], [false, 'WFH']);
+  assertEq(idx(env, 'Asha').codes[todayIdx], 'WFH');
 });
 
 console.log('done');

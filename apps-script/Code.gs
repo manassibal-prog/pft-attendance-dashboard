@@ -142,7 +142,7 @@ const ACTIONS = {
       .sort(function (a, b) { return a.date === b.date ? 0 : (a.date < b.date ? 1 : -1); });
     return { requests: mine.slice(0, 100) };
   },
-  // Marks a day as Leave / Half Day / Unpaid Leave / Work From Home / Week Off.
+  // Marks a day as Leave / Half Day / Unpaid Leave / Week Off.
   // Always lands as Pending; the team lead changes Status in the sheet.
   submitLeave: function (p) {
     const lock = LockService.getScriptLock();
@@ -153,7 +153,7 @@ const ACTIONS = {
       const emp = res.emp;
       const email = String(emp.email).trim().toLowerCase();
       const code = String(p.type || '').toUpperCase();
-      if (!LEAVE_TYPES[code]) throw new Error('Choose what you are marking: Leave, Half Day, Unpaid Leave, Work From Home or Week Off.');
+      if (!LEAVE_TYPES[code]) throw new Error('Choose what you are marking: Leave, Half Day, Unpaid Leave or Week Off.');
       const dateKey = String(p.date || '').trim();
       if (!isRealDateKey_(dateKey)) throw new Error('Pick a valid date.');
 
@@ -1005,7 +1005,7 @@ const EVENT_LABEL = {
 // ---------- Leave & half-day requests ----------
 // One row per request in the "Leave Requests" tab (created on first use). The
 // advisor sees and cancels their own; the team lead approves by changing Status.
-const LEAVE_TYPES = { L: 'Leave', HD: 'Half Day', UP: 'Unpaid Leave', WFH: 'Work From Home', WO: 'Week Off' };
+const LEAVE_TYPES = { L: 'Leave', HD: 'Half Day', UP: 'Unpaid Leave', WO: 'Week Off' };
 const LEAVE_HEADERS = ['Request ID', 'Submitted At', 'Emp ID', 'Employee Name', 'Email', 'Date', 'Type', 'Note', 'Status', 'Decided By', 'Decided At'];
 const LEAVE_STATUSES = ['Pending', 'Approved', 'Rejected', 'Cancelled'];
 const LEAVE_COL = { id: 1, submitted: 2, empId: 3, name: 4, email: 5, date: 6, type: 7, note: 8, status: 9, decidedBy: 10, decidedAt: 11 };

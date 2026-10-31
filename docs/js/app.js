@@ -765,7 +765,7 @@ window.addEventListener('beforeunload', function (e) {
 // Advisors mark a day here; it lands as a Pending row in the Leave Requests
 // tab, where the team lead approves it. Each submit carries a requestId, so a
 // reply lost on the way back is retried without creating a second request.
-const LEAVE_TYPES = [['L', 'Leave'], ['HD', 'Half Day'], ['UP', 'Unpaid Leave'], ['WFH', 'Work From Home'], ['WO', 'Week Off']];
+const LEAVE_TYPES = [['L', 'Leave'], ['HD', 'Half Day'], ['UP', 'Unpaid Leave'], ['WO', 'Week Off']];
 
 function esc_(v) {
   return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -796,7 +796,7 @@ function upsertLeave_(req) {
 
 function renderLeaveCard_() {
   let html = '<div class="card"><h1>Leave &amp; Half Day</h1>' +
-    '<div class="sub">Mark a leave, half day, work from home or week off. Your team lead approves it in the Leave Requests sheet.</div>';
+    '<div class="sub">Mark a leave, half day, unpaid leave or week off. Your team lead approves it in the Leave Requests sheet.</div>';
   html += '<div class="leave-form">' +
     '<label>Date<input type="date" id="leaveDate" value="' + esc_(LEAVE_DRAFT.date) + '" min="' + dayOffsetKey_(-7) + '" max="' + dayOffsetKey_(180) + '"></label>' +
     '<label>Type<select id="leaveType">' + LEAVE_TYPES.map(function (t) {
@@ -931,7 +931,7 @@ function sortLeaveRequests_(list) {
 function renderLeaveRequestsCard_() {
   const pending = LEAVE_REQS ? LEAVE_REQS.filter(function (r) { return r.status === 'Pending'; }).length : 0;
   let html = '<div class="card"><h1>Leave Requests' + (pending ? '<span class="count-badge">' + pending + ' pending</span>' : '') + '</h1>' +
-    '<div class="sub">Approve or reject leave, half day, work from home and week off. Approved ones show in the roster and the reports.</div>';
+    '<div class="sub">Approve or reject leave, half day, unpaid leave and week off. Approved ones show in the roster and the reports.</div>';
   html += '<div class="leave-msg">' + (LEAVE_REQS_MSG ? '<div class="status ' + (LEAVE_REQS_MSG.kind === 'ok' ? 'ok' : 'err') + '">' + esc_(LEAVE_REQS_MSG.text) + '</div>' : '') + '</div>';
 
   if (LEAVE_REQS === null) {

@@ -52,10 +52,11 @@ const req = (o) => Object.assign({ id: 'r1', date: '2026-11-05', code: 'L', type
     assertEq(html.indexOf('id="leaveSubmit"') > -1 && html.indexOf('id="leaveDate"') > -1 && html.indexOf('id="leaveType"') > -1, true);
   });
 
-  await t('the type list offers exactly Leave, Half Day, Unpaid Leave, Work From Home, Week Off', async function () {
+  await t('the type list offers exactly Leave, Half Day, Unpaid Leave, Week Off — no Work From Home', async function () {
     const html = makeEnv().sb.renderLeaveCard_();
     const options = (html.match(/<option value="([A-Z]+)"[^>]*>([^<]+)</g) || []).map((o) => o.replace(/<option value="([A-Z]+)"[^>]*>([^<]+)</, '$1=$2'));
-    assertEq(options, ['L=Leave', 'HD=Half Day', 'UP=Unpaid Leave', 'WFH=Work From Home', 'WO=Week Off']);
+    assertEq(options, ['L=Leave', 'HD=Half Day', 'UP=Unpaid Leave', 'WO=Week Off']);
+    assertEq(html.indexOf('Work From Home') === -1 && html.indexOf('work from home') === -1, true, 'not offered or mentioned anywhere on the card');
   });
 
   await t('the date picker only allows 7 days back to 180 days ahead (same window the server enforces)', async function () {
@@ -75,11 +76,11 @@ const req = (o) => Object.assign({ id: 'r1', date: '2026-11-05', code: 'L', type
       req({ id: 'a', code: 'L', type: 'Leave', status: 'Pending', note: 'fever' }),
       req({ id: 'b', code: 'UP', type: 'Unpaid Leave', status: 'Approved', date: '2026-11-04' }),
       req({ id: 'c', code: 'HD', type: 'Half Day', status: 'Rejected', date: '2026-11-03' }),
-      req({ id: 'd', code: 'WFH', type: 'Work From Home', status: 'Cancelled', date: '2026-11-02' })
+      req({ id: 'd', code: 'WO', type: 'Week Off', status: 'Cancelled', date: '2026-11-02' })
     ] });
     const html = env.sb.renderLeaveCard_();
     assertEq(html.indexOf('<span class="rc rc-L">Leave</span>') > -1 && html.indexOf('<span class="rc rc-L">Unpaid Leave</span>') > -1, true, 'neon class');
-    assertEq(html.indexOf('<span class="rc rc-HD">Half Day</span>') > -1 && html.indexOf('<span class="rc rc-WFH">Work From Home</span>') > -1, true);
+    assertEq(html.indexOf('<span class="rc rc-HD">Half Day</span>') > -1 && html.indexOf('<span class="rc rc-WO">Week Off</span>') > -1, true);
     ['Pending', 'Approved', 'Rejected', 'Cancelled'].forEach((s) => assertEq(html.indexOf('status-pill st-' + s) > -1, true, s));
     assertEq((html.match(/data-cancel-leave=/g) || []).length, 1);
     assertEq(html.indexOf('data-cancel-leave="a"') > -1, true);

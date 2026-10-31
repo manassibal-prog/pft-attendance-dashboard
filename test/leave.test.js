@@ -94,11 +94,21 @@ t('a request is saved as Pending, with the type spelled out for whoever reads th
 t('every type maps to its roster code and label', () => {
   const env = makeEnv();
   const seen = {};
-  [['L', 'Leave'], ['HD', 'Half Day'], ['UP', 'Unpaid Leave'], ['WFH', 'Work From Home'], ['WO', 'Week Off']].forEach(([code, label], i) => {
+  [['L', 'Leave'], ['HD', 'Half Day'], ['UP', 'Unpaid Leave'], ['WO', 'Week Off']].forEach(([code, label], i) => {
     const r = env.submit('asha@wiom.in', code, dayKey(10 + i), '', 'id-' + code);
     seen[code] = [r.request.code, r.request.type];
   });
-  assertEq(seen, { L: ['L', 'Leave'], HD: ['HD', 'Half Day'], UP: ['UP', 'Unpaid Leave'], WFH: ['WFH', 'Work From Home'], WO: ['WO', 'Week Off'] });
+  assertEq(seen, { L: ['L', 'Leave'], HD: ['HD', 'Half Day'], UP: ['UP', 'Unpaid Leave'], WO: ['WO', 'Week Off'] });
+});
+
+t('Work From Home is not something an advisor can request any more — refused clearly, nothing written', () => {
+  const env = makeEnv();
+  ['WFH', 'wfh', 'Work From Home'].forEach((type) => {
+    const r = env.submit('asha@wiom.in', type, dayKey(3), '', 'w-' + type);
+    assertEq(r.success, false, type);
+    assertEq(r.message, 'Choose what you are marking: Leave, Half Day, Unpaid Leave or Week Off.');
+  });
+  assertEq(env.leaveRows(), null, 'refused before touching the sheet');
 });
 
 t('people only ever see their own requests, newest date first', () => {
