@@ -53,7 +53,8 @@ let LEAVE = null;
 let LEAVE_ERROR = null;
 let LEAVE_BUSY = false;
 let LEAVE_MSG = null;
-let LEAVE_DRAFT = { date: '', type: 'L', note: '' };
+let LEAVE_DRAFT = { dates: [], type: 'L', note: '' };
+let LEAVE_CAL = null; // month the leave calendar is showing: { y, m }
 // The team lead's view of everyone's requests (Leave Requests card on the manager screen).
 let LEAVE_REQS = null;
 let LEAVE_REQS_ERROR = null;
@@ -302,7 +303,7 @@ function resetSessionData_() {
   STATE = freshState_(); STATE_LOADED = false; STATE_LOAD_ERROR = null;
   STATE_PENDING_NOTE = null; STATE_RECHECK = null;
   ACTION_IN_FLIGHT = false;
-  LEAVE = null; LEAVE_ERROR = null; LEAVE_BUSY = false; LEAVE_MSG = null; LEAVE_DRAFT = { date: '', type: 'L', note: '' };
+  LEAVE = null; LEAVE_ERROR = null; LEAVE_BUSY = false; LEAVE_MSG = null; LEAVE_DRAFT = { dates: [], type: 'L', note: '' }; LEAVE_CAL = null;
   LEAVE_REQS = null; LEAVE_REQS_ERROR = null; LEAVE_REQS_BUSY = false; LEAVE_REQS_MSG = null; leaveReqPollCount = 0;
 }
 
@@ -569,13 +570,17 @@ function renderMe() {
   html += renderLeaveCard_();
 
   const active = document.activeElement;
-  const focusId = active && /^leave(Date|Type|Note)$/.test(active.id) ? active.id : null;
-  const caret = focusId && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
+  const focusSel = !active || !active.getAttribute ? null
+    : /^leave(Type|Note)$/.test(active.id) ? '#' + active.id
+    : active.getAttribute('data-cal-day') ? '[data-cal-day="' + active.getAttribute('data-cal-day') + '"]'
+    : active.getAttribute('data-cal-nav') ? '[data-cal-nav="' + active.getAttribute('data-cal-nav') + '"]'
+    : null;
+  const caret = focusSel && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
   body.innerHTML = html;
   wireRosterNav();
   wireLeaveCard_();
-  if (focusId) {
-    const again = document.getElementById(focusId);
+  if (focusSel) {
+    const again = document.querySelector(focusSel);
     if (again) { again.focus(); if (caret && again.setSelectionRange) { try { again.setSelectionRange(caret[0], caret[1]); } catch (_) {} } }
   }
   const stateRetryBtn = document.getElementById('stateRetryBtn');
@@ -794,17 +799,122 @@ function upsertLeave_(req) {
   LEAVE = sortLeave_(rest.concat([req]));
 }
 
+// ---------- Leave calendar: click days to select / unselect them ----------
+// Same limits the server enforces: a day from 7 days back to 180 days ahead,
+// up to 31 days per request, and never a day that already has a Pending or
+// Approved request.
+const LEAVE_PAST_DAYS = 7;
+const LEAVE_FUTURE_DAYS = 180;
+const LEAVE_MAX_DAYS_PER_REQUEST = 31;
+
+function leaveWindow_() {
+  return { min: dayOffsetKey_(-LEAVE_PAST_DAYS), max: dayOffsetKey_(LEAVE_FUTURE_DAYS) };
+}
+
+// date -> "Leave (Pending)" for every day that already has an active request.
+function bookedLeaveDays_() {
+  const booked = {};
+  (LEAVE || []).forEach(function (r) {
+    if (r.status === 'Pending' || r.status === 'Approved') booked[r.date] = r.type + ' (' + r.status + ')';
+  });
+  return booked;
+}
+
+function leaveCalMonth_() {
+  if (!LEAVE_CAL) {
+    const now = new Date();
+    LEAVE_CAL = { y: now.getFullYear(), m: now.getMonth() };
+  }
+  return LEAVE_CAL;
+}
+function shiftLeaveMonth_(delta) {
+  const c = leaveCalMonth_();
+  const d = new Date(c.y, c.m + delta, 1);
+  LEAVE_CAL = { y: d.getFullYear(), m: d.getMonth() };
+}
+
+// One month as weeks (Monday first, like the roster); null fills the blank cells either side.
+function monthWeeks_(y, m) {
+  const lead = (new Date(y, m, 1).getDay() + 6) % 7;
+  const count = new Date(y, m + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(null);
+  for (let d = 1; d <= count; d++) cells.push(ymd_(new Date(y, m, d)));
+  while (cells.length % 7) cells.push(null);
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+
+function toggleLeaveDay_(key) {
+  const picked = LEAVE_DRAFT.dates;
+  if (picked.indexOf(key) > -1) {
+    LEAVE_DRAFT.dates = picked.filter(function (d) { return d !== key; });
+    LEAVE_MSG = null;
+  } else {
+    const win = leaveWindow_();
+    if (key < win.min || key > win.max || bookedLeaveDays_()[key]) return;
+    if (picked.length >= LEAVE_MAX_DAYS_PER_REQUEST) {
+      LEAVE_MSG = { kind: 'err', text: 'You can select up to ' + LEAVE_MAX_DAYS_PER_REQUEST + ' days at a time.' };
+    } else {
+      LEAVE_DRAFT.dates = picked.concat([key]).sort();
+      LEAVE_MSG = null;
+    }
+  }
+  renderMe();
+}
+
+function renderLeaveCalendar_() {
+  const cal = leaveCalMonth_();
+  const win = leaveWindow_();
+  const booked = bookedLeaveDays_();
+  const picked = {};
+  LEAVE_DRAFT.dates.forEach(function (d) { picked[d] = true; });
+  const today = ymd_(new Date());
+  const first = ymd_(new Date(cal.y, cal.m, 1));
+  const last = ymd_(new Date(cal.y, cal.m + 1, 0));
+  const title = new Date(cal.y, cal.m, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  let html = '<div class="cal"><div class="cal-head">' +
+    '<button type="button" class="cal-nav" data-cal-nav="-1" aria-label="Previous month"' + (first > win.min ? '' : ' disabled') + '>‹</button>' +
+    '<div class="cal-title">' + esc_(title) + '</div>' +
+    '<button type="button" class="cal-nav" data-cal-nav="1" aria-label="Next month"' + (last < win.max ? '' : ' disabled') + '>›</button>' +
+    '</div><div class="cal-grid">' +
+    ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map(function (w) { return '<div class="cal-wd">' + w + '</div>'; }).join('');
+  monthWeeks_(cal.y, cal.m).forEach(function (week) {
+    week.forEach(function (key) {
+      if (!key) { html += '<div></div>'; return; }
+      const outside = key < win.min || key > win.max;
+      const taken = !outside && booked[key];
+      const cls = 'cal-day' + (picked[key] ? ' cal-sel' : '') + (key === today ? ' cal-today' : '') + (taken ? ' cal-booked' : '');
+      html += '<button type="button" class="' + cls + '" data-cal-day="' + key + '" aria-pressed="' + (picked[key] ? 'true' : 'false') + '"' +
+        (outside || taken ? ' disabled' : '') + (taken ? ' title="Already requested: ' + esc_(booked[key]) + '"' : '') + '>' + Number(key.slice(8)) + '</button>';
+    });
+  });
+  return html + '</div></div>';
+}
+
+function renderLeaveSelection_() {
+  const picked = LEAVE_DRAFT.dates;
+  if (!picked.length) return '<div class="cal-hint">Click the days you need on the calendar — one or several.</div>';
+  return '<div class="cal-chips">' + picked.map(function (d) {
+    return '<span class="cal-chip">' + fmtLeaveDate_(d) + '<button type="button" data-cal-remove="' + d + '" aria-label="Remove ' + d + '">×</button></span>';
+  }).join('') + '<button type="button" class="cal-clear" id="leaveClear">Clear all</button></div>';
+}
+
 function renderLeaveCard_() {
+  const n = LEAVE_DRAFT.dates.length;
   let html = '<div class="card"><h1>Leave &amp; Half Day</h1>' +
-    '<div class="sub">Mark a leave, half day, unpaid leave or week off. Your team lead approves it in the Leave Requests sheet.</div>';
-  html += '<div class="leave-form">' +
-    '<label>Date<input type="date" id="leaveDate" value="' + esc_(LEAVE_DRAFT.date) + '" min="' + dayOffsetKey_(-7) + '" max="' + dayOffsetKey_(180) + '"></label>' +
-    '<label>Type<select id="leaveType">' + LEAVE_TYPES.map(function (t) {
-      return '<option value="' + t[0] + '"' + (LEAVE_DRAFT.type === t[0] ? ' selected' : '') + '>' + t[1] + '</option>';
-    }).join('') + '</select></label>' +
-    '<label class="grow">Note (optional)<input type="text" id="leaveNote" maxlength="200" placeholder="e.g. doctor appointment" value="' + esc_(LEAVE_DRAFT.note) + '"></label>' +
-    '<button id="leaveSubmit" type="button"' + (LEAVE_BUSY ? ' disabled' : '') + '>' + (LEAVE_BUSY ? 'Saving…' : 'Submit') + '</button>' +
-    '</div>';
+    '<div class="sub">Pick one day or several, choose what it is, and submit. Your team lead approves each day.</div>';
+  html += '<div class="leave-layout">' + renderLeaveCalendar_() +
+    '<div class="leave-form">' +
+      '<label>Type<select id="leaveType">' + LEAVE_TYPES.map(function (t) {
+        return '<option value="' + t[0] + '"' + (LEAVE_DRAFT.type === t[0] ? ' selected' : '') + '>' + t[1] + '</option>';
+      }).join('') + '</select></label>' +
+      '<label>Note (optional)<input type="text" id="leaveNote" maxlength="200" placeholder="e.g. doctor appointment" value="' + esc_(LEAVE_DRAFT.note) + '"></label>' +
+      '<div><div class="cal-sel-title">Selected days</div>' + renderLeaveSelection_() + '</div>' +
+      '<button id="leaveSubmit" type="button"' + (LEAVE_BUSY || !n ? ' disabled' : '') + '>' +
+        (LEAVE_BUSY ? 'Saving…' : (n ? 'Submit ' + n + ' day' + (n > 1 ? 's' : '') : 'Submit')) + '</button>' +
+    '</div></div>';
   html += '<div class="leave-msg">' + (LEAVE_MSG ? '<div class="status ' + (LEAVE_MSG.kind === 'ok' ? 'ok' : 'err') + '">' + esc_(LEAVE_MSG.text) + '</div>' : '') + '</div>';
 
   if (LEAVE === null) {
@@ -812,7 +922,7 @@ function renderLeaveCard_() {
       ? '<div class="status err">' + esc_(LEAVE_ERROR) + '</div><button id="leaveRetry" class="roster-nav-btn" type="button" style="margin-top:10px;">Try again</button>'
       : '<div class="loading" style="padding:20px 0;">Loading…</div>';
   } else if (!LEAVE.length) {
-    html += '<div class="sub" style="margin:4px 0 0;">No requests yet. Pick a date above and submit.</div>';
+    html += '<div class="sub" style="margin:4px 0 0;">No requests yet. Pick your days above and submit.</div>';
   } else {
     html += '<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Type</th><th>Note</th><th>Status</th><th></th></tr></thead><tbody>';
     LEAVE.forEach(function (r) {
@@ -828,10 +938,19 @@ function renderLeaveCard_() {
 }
 
 function wireLeaveCard_() {
-  const date = document.getElementById('leaveDate');
+  document.querySelectorAll('[data-cal-day]').forEach(function (el) {
+    el.addEventListener('click', function () { toggleLeaveDay_(el.getAttribute('data-cal-day')); });
+  });
+  document.querySelectorAll('[data-cal-remove]').forEach(function (el) {
+    el.addEventListener('click', function () { toggleLeaveDay_(el.getAttribute('data-cal-remove')); });
+  });
+  document.querySelectorAll('[data-cal-nav]').forEach(function (el) {
+    el.addEventListener('click', function () { shiftLeaveMonth_(Number(el.getAttribute('data-cal-nav'))); renderMe(); });
+  });
+  const clear = document.getElementById('leaveClear');
+  if (clear) clear.addEventListener('click', function () { LEAVE_DRAFT.dates = []; LEAVE_MSG = null; renderMe(); });
   const type = document.getElementById('leaveType');
   const note = document.getElementById('leaveNote');
-  if (date) ['input', 'change'].forEach(function (ev) { date.addEventListener(ev, function () { LEAVE_DRAFT.date = date.value; }); });
   if (type) type.addEventListener('change', function () { LEAVE_DRAFT.type = type.value; });
   if (note) {
     note.addEventListener('input', function () { LEAVE_DRAFT.note = note.value; });
@@ -863,20 +982,23 @@ function loadLeave_() {
 
 function submitLeave_() {
   if (LEAVE_BUSY) return;
-  if (!LEAVE_DRAFT.date) { LEAVE_MSG = { kind: 'err', text: 'Pick a date first.' }; renderMe(); return; }
+  if (!LEAVE_DRAFT.dates.length) { LEAVE_MSG = { kind: 'err', text: 'Click at least one day on the calendar first.' }; renderMe(); return; }
   const email = CURRENT.email;
-  const draft = Object.assign({}, LEAVE_DRAFT);
+  const draft = { dates: LEAVE_DRAFT.dates.slice(), type: LEAVE_DRAFT.type, note: LEAVE_DRAFT.note };
   LEAVE_BUSY = true;
   LEAVE_MSG = null;
   renderMe();
-  return api({ action: 'submitLeave', email: email, date: draft.date, type: draft.type, note: draft.note, requestId: newRequestId_() })
+  return api({ action: 'submitLeave', email: email, dates: draft.dates.join(','), type: draft.type, note: draft.note, requestId: newRequestId_() })
     .then(function (res) {
       LEAVE_BUSY = false;
       if (res.success) {
-        upsertLeave_(res.request);
+        const saved = res.requests || [res.request];
+        saved.forEach(upsertLeave_);
         cacheSet(email, 'leave', LEAVE);
-        LEAVE_DRAFT = { date: '', type: draft.type, note: '' };
-        LEAVE_MSG = { kind: 'ok', text: res.duplicate ? 'Already submitted — it is in the list below.' : 'Submitted. It stays Pending until your team lead approves it.' };
+        LEAVE_DRAFT = { dates: [], type: draft.type, note: '' };
+        LEAVE_MSG = { kind: 'ok', text: res.duplicate
+          ? 'Already submitted — ' + (saved.length > 1 ? 'those days are' : 'it is') + ' in the list below.'
+          : (saved.length > 1 ? 'Submitted ' + saved.length + ' days. They stay Pending until your team lead approves them.' : 'Submitted. It stays Pending until your team lead approves it.') };
       } else {
         LEAVE_MSG = { kind: 'err', text: res.message };
       }

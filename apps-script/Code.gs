@@ -142,8 +142,10 @@ const ACTIONS = {
       .sort(function (a, b) { return a.date === b.date ? 0 : (a.date < b.date ? 1 : -1); });
     return { requests: mine.slice(0, 100) };
   },
-  // Marks a day as Leave / Half Day / Unpaid Leave / Week Off.
-  // Always lands as Pending; the team lead changes Status in the sheet.
+  // Marks one or several days as Leave / Half Day / Unpaid Leave / Week Off — `dates` is
+  // a comma-separated list of YYYY-MM-DD (an older screen sends a single `date`).
+  // One Pending row per day. All days are checked first and saved together in one
+  // write, so a request is either fully saved or not at all.
   submitLeave: function (p) {
     const lock = LockService.getScriptLock();
     lock.waitLock(15000);
@@ -154,36 +156,57 @@ const ACTIONS = {
       const email = String(emp.email).trim().toLowerCase();
       const code = String(p.type || '').toUpperCase();
       if (!LEAVE_TYPES[code]) throw new Error('Choose what you are marking: Leave, Half Day, Unpaid Leave or Week Off.');
-      const dateKey = String(p.date || '').trim();
-      if (!isRealDateKey_(dateKey)) throw new Error('Pick a valid date.');
 
-      const now = new Date();
-      const todayKey = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-      const days = Math.round((parseYyyyMmDd_(dateKey) - parseYyyyMmDd_(todayKey)) / 86400000);
-      if (days < -LEAVE_PAST_DAYS) throw new Error('You can mark a day up to ' + LEAVE_PAST_DAYS + ' days back. Ask your team lead for anything older.');
-      if (days > LEAVE_FUTURE_DAYS) throw new Error('You can mark a day up to ' + LEAVE_FUTURE_DAYS + ' days ahead.');
+      const dateKeys = String(p.dates || p.date || '').split(',')
+        .map(function (d) { return d.trim(); })
+        .filter(function (d, i, all) { return d && all.indexOf(d) === i; })
+        .sort();
+      if (!dateKeys.length) throw new Error('Pick a valid date.');
+      if (dateKeys.length > LEAVE_MAX_DAYS_PER_REQUEST) throw new Error('You can request up to ' + LEAVE_MAX_DAYS_PER_REQUEST + ' days at a time.');
+      const many = dateKeys.length > 1;
 
       const rows = readLeave_();
       const requestId = String(p.requestId || '').slice(0, 64);
       // The reply to an earlier attempt of this same submit got lost: it is already saved.
-      const prior = requestId ? rows.filter(function (r) { return r.id === requestId && r.email === email; })[0] : null;
-      if (prior) return { success: true, duplicate: true, request: clientLeave_(prior) };
+      const prior = requestId ? rows.filter(function (r) {
+        return r.email === email && (r.id === requestId || r.id.indexOf(requestId + '#') === 0);
+      }) : [];
+      if (prior.length) return { success: true, duplicate: true, requests: prior.map(clientLeave_), request: clientLeave_(prior[0]) };
 
-      const clash = rows.filter(function (r) {
-        return r.email === email && r.date === dateKey && (r.status === 'Pending' || r.status === 'Approved');
-      })[0];
-      if (clash) throw new Error('You already have ' + clash.type + ' on ' + dateKey + ' (' + clash.status + '). Cancel it first to change it.');
+      const now = new Date();
+      const todayKey = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      const problems = [];
+      dateKeys.forEach(function (dateKey) {
+        const lead = many ? dateKey + ': ' : '';
+        if (!isRealDateKey_(dateKey)) { problems.push(lead + 'Pick a valid date.'); return; }
+        const days = Math.round((parseYyyyMmDd_(dateKey) - parseYyyyMmDd_(todayKey)) / 86400000);
+        if (days < -LEAVE_PAST_DAYS) { problems.push(lead + 'You can mark a day up to ' + LEAVE_PAST_DAYS + ' days back. Ask your team lead for anything older.'); return; }
+        if (days > LEAVE_FUTURE_DAYS) { problems.push(lead + 'You can mark a day up to ' + LEAVE_FUTURE_DAYS + ' days ahead.'); return; }
+        const clash = rows.filter(function (r) {
+          return r.email === email && r.date === dateKey && (r.status === 'Pending' || r.status === 'Approved');
+        })[0];
+        if (clash) problems.push('You already have ' + clash.type + ' on ' + dateKey + ' (' + clash.status + '). Cancel it first to change it.');
+      });
+      if (problems.length) {
+        throw new Error(problems.slice(0, 3).join(' ') + (problems.length > 3 ? ' (and ' + (problems.length - 3) + ' more problem' + (problems.length - 3 > 1 ? 's' : '') + ')' : ''));
+      }
 
-      const id = requestId || ('L' + now.getTime().toString(36));
+      const base = requestId || ('L' + now.getTime().toString(36));
       const note = cleanNote_(p.note);
+      const newRows = dateKeys.map(function (dateKey, i) {
+        return [many ? base + '#' + (i + 1) : base, now, emp.empId, emp.name, emp.email, parseYyyyMmDd_(dateKey), LEAVE_TYPES[code], note, 'Pending', '', ''];
+      });
       const sh = getLeaveSheet_();
-      sh.appendRow([id, now, emp.empId, emp.name, emp.email, parseYyyyMmDd_(dateKey), LEAVE_TYPES[code], note, 'Pending', '', '']);
+      const start = sh.getLastRow() + 1;
+      sh.getRange(start, 1, newRows.length, LEAVE_HEADERS.length).setValues(newRows);
       try {
-        const last = sh.getLastRow();
-        sh.getRange(last, LEAVE_COL.submitted).setNumberFormat('dd/MMM/yyyy HH:mm');
-        sh.getRange(last, LEAVE_COL.date).setNumberFormat('dd/MMM/yyyy');
+        sh.getRange(start, LEAVE_COL.submitted, newRows.length, 1).setNumberFormat('dd/MMM/yyyy HH:mm');
+        sh.getRange(start, LEAVE_COL.date, newRows.length, 1).setNumberFormat('dd/MMM/yyyy');
       } catch (e) { /* cosmetic only */ }
-      return { success: true, request: clientLeave_({ id: id, date: dateKey, code: code, type: LEAVE_TYPES[code], note: note, status: 'Pending', submittedAt: now.toISOString() }) };
+      const saved = newRows.map(function (r, i) {
+        return clientLeave_({ id: r[0], date: dateKeys[i], code: code, type: LEAVE_TYPES[code], note: note, status: 'Pending', submittedAt: now.toISOString() });
+      });
+      return { success: true, requests: saved, request: saved[0] };
     } catch (err) {
       return { success: false, message: err.message };
     } finally {
@@ -1011,6 +1034,7 @@ const LEAVE_STATUSES = ['Pending', 'Approved', 'Rejected', 'Cancelled'];
 const LEAVE_COL = { id: 1, submitted: 2, empId: 3, name: 4, email: 5, date: 6, type: 7, note: 8, status: 9, decidedBy: 10, decidedAt: 11 };
 const LEAVE_PAST_DAYS = 7;
 const LEAVE_FUTURE_DAYS = 180;
+const LEAVE_MAX_DAYS_PER_REQUEST = 31;
 
 function getLeaveSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();

@@ -187,7 +187,8 @@ t('bad input is refused with a clear message, and nothing is written', () => {
     assertEq(r.success, false, type + ' ' + date);
     assertEq(r.message.indexOf(expect) > -1, true, r.message);
   });
-  assertEq(env.leaveRows(), null, 'refused before touching the sheet — not even the tab is created');
+  const rows = env.leaveRows();
+  assertEq(rows === null || rows.length === 1, true, 'no request row was written (at most the empty tab with its header)');
 });
 
 t('the window edges are allowed: 7 days back and 180 days ahead', () => {
@@ -224,6 +225,93 @@ t('unregistered and inactive people are refused', () => {
   let threw = false;
   try { env.mine('nobody@wiom.in'); } catch (e) { threw = true; }
   assertEq(threw, true);
+});
+
+// ---- several days in one request ----
+const days3 = () => [dayKey(10), dayKey(11), dayKey(14)];
+const ids = (rows) => rows.slice(1).map((r) => r[0]);
+
+t('several days become one Pending row each, saved together, with ids that tie them to the one request', () => {
+  const env = makeEnv();
+  const d = days3();
+  const r = env.submit('asha@wiom.in', 'L', d.join(','), 'family trip', 'multi');
+  assertEq(r.success, true);
+  assertEq(r.requests.map((x) => [x.id, x.date, x.status, x.type, x.note]), d.map((day, i) => ['multi#' + (i + 1), day, 'Pending', 'Leave', 'family trip']));
+  assertEq(ids(env.leaveRows()), ['multi#1', 'multi#2', 'multi#3']);
+  assertEq(env.leaveRows().slice(1).map((row) => row[8]), ['Pending', 'Pending', 'Pending']);
+  assertEq(r.request.id, 'multi#1', 'older screens that read `request` still get the first day');
+});
+
+t('the days are saved in date order whatever order they were picked, and repeats are collapsed', () => {
+  const env = makeEnv();
+  const [a, b, c] = days3();
+  const r = env.submit('asha@wiom.in', 'HD', [c, a, b, a].join(','), '', 'ord');
+  assertEq(r.requests.map((x) => x.date), [a, b, c]);
+  assertEq(env.leaveRows().length, 4);
+});
+
+t('a single day keeps its plain id (what an older screen sends, and what Cancel/Approve already use)', () => {
+  const env = makeEnv();
+  const one = env.submit('asha@wiom.in', 'L', dayKey(10), '', 'solo');
+  assertEq(one.request.id, 'solo');
+  const viaDates = env.submit('ben@wiom.in', 'L', undefined, '', 'solo2');
+  assertEq(viaDates.success, false);
+  const r = env.A.submitLeave({ email: 'ben@wiom.in', type: 'L', dates: dayKey(12), note: '', requestId: 'solo3' });
+  assertEq([r.success, r.request.id], [true, 'solo3']);
+});
+
+t('the same multi-day submit retried (reply lost) returns the same rows and saves nothing more', () => {
+  const env = makeEnv();
+  env.submit('asha@wiom.in', 'L', days3().join(','), '', 'again');
+  const retry = env.submit('asha@wiom.in', 'L', days3().join(','), '', 'again');
+  assertEq([retry.success, retry.duplicate, retry.requests.map((x) => x.id)], [true, true, ['again#1', 'again#2', 'again#3']]);
+  assertEq(env.leaveRows().length, 4);
+});
+
+t('all or nothing: one day that clashes with an existing request stops the whole batch, naming the day', () => {
+  const env = makeEnv();
+  const [a, b, c] = days3();
+  env.submit('asha@wiom.in', 'HD', b, '', 'first');
+  const r = env.submit('asha@wiom.in', 'L', [a, b, c].join(','), '', 'batch');
+  assertEq(r.success, false);
+  assertEq(r.message.indexOf(b) > -1 && r.message.indexOf('Cancel it first') > -1, true, r.message);
+  assertEq(env.leaveRows().length, 2, 'nothing from the batch was written');
+});
+
+t('all or nothing: one day outside the allowed window stops the whole batch, naming the day', () => {
+  const env = makeEnv();
+  const tooFar = dayKey(200);
+  const r = env.submit('asha@wiom.in', 'L', [dayKey(10), tooFar].join(','), '', 'far');
+  assertEq(r.success, false);
+  assertEq(r.message.indexOf(tooFar + ':') > -1 && r.message.indexOf('180 days ahead') > -1, true, r.message);
+  const rows = env.leaveRows();
+  assertEq(rows === null || rows.length === 1, true);
+});
+
+t('a rejected or cancelled day does not block asking for it again as part of a batch', () => {
+  const env = makeEnv();
+  const [a, b] = days3();
+  env.submit('asha@wiom.in', 'L', a, '', 'x1');
+  env.submit('asha@wiom.in', 'L', b, '', 'x2');
+  env.A.cancelLeave({ email: 'asha@wiom.in', id: 'x1' });
+  env.leaveRows()[2][8] = 'Rejected';
+  assertEq(env.submit('asha@wiom.in', 'HD', [a, b].join(','), '', 'again2').success, true);
+});
+
+t('at most 31 days per request, and a list with no usable day is refused', () => {
+  const env = makeEnv();
+  const many = Array.from({ length: 32 }, (_, i) => dayKey(i + 1));
+  assertEq(env.submit('asha@wiom.in', 'L', many.join(','), '', 'big').message, 'You can request up to 31 days at a time.');
+  assertEq(env.submit('asha@wiom.in', 'L', many.slice(0, 31).join(','), '', 'ok31').success, true);
+  assertEq(env.submit('asha@wiom.in', 'L', ' , ,', '', 'none').message, 'Pick a valid date.');
+});
+
+t('each day of a batch is its own request afterwards: cancel one, approve another, the rest untouched', () => {
+  const env = makeEnv();
+  env.submit('asha@wiom.in', 'L', days3().join(','), '', 'grp');
+  assertEq(env.cancel('asha@wiom.in', 'grp#2').request.status, 'Cancelled');
+  assertEq(env.leaveRows().slice(1).map((r) => r[8]), ['Pending', 'Cancelled', 'Pending']);
+  assertEq(env.mine('asha@wiom.in').map((r) => r.status).sort(), ['Cancelled', 'Pending', 'Pending']);
 });
 
 console.log('done');
