@@ -1,6 +1,7 @@
-// The team lead's "Leave Requests" card in docs/js/app.js: how it renders and
-// how approve / reject / reopen / load behave. Sliced out of the real file and
-// run in a vm with a scripted api() (app.js can't load in Node).
+// The team lead's "Leave Requests" card in docs/js/app.js: a submitted request of
+// several days is ONE line, with one Approve / Reject; days can be opened out and
+// decided one by one. Sliced out of the real file and run in a vm with a scripted
+// api() (app.js can't load in Node).
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -25,7 +26,7 @@ const flush = function () { return new Promise(function (r) { setImmediate(r); }
 function makeEnv(over) {
   const env = { renders: 0, apiCalls: [], pending: [], cacheWrites: [], rosterLoads: 0, ids: 0 };
   const sandbox = Object.assign({
-    LEAVE_REQS: null, LEAVE_REQS_ERROR: null, LEAVE_REQS_BUSY: false, LEAVE_REQS_MSG: null,
+    LEAVE_REQS: null, LEAVE_REQS_ERROR: null, LEAVE_REQS_BUSY: false, LEAVE_REQS_MSG: null, LEAVE_REQS_OPEN: {},
     CURRENT: { email: 'lead@wiom.in' },
     renderTeam: function () { env.renders++; },
     loadTeamRoster: function () { env.rosterLoads++; },
@@ -45,8 +46,65 @@ function makeEnv(over) {
 }
 const req = (o) => Object.assign({ id: 'r1', empId: 'E1', name: 'Asha', date: '2026-11-05', code: 'L', type: 'Leave', note: '', status: 'Pending', submittedAt: '2026-11-01T05:00:00.000Z', decidedBy: '', decidedAt: '' }, o || {});
 const count = (html, re) => (html.match(re) || []).length;
+// n consecutive days from a start date, as one submitted request "base" (ids base#1 … base#n)
+function run(base, who, empId, from, n, over) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date(2026, 10, 1 + (from - 1) + i);   // from = day of Nov 2026
+    const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    out.push(req(Object.assign({ id: n > 1 ? base + '#' + (i + 1) : base, name: who, empId: empId, date: key }, over || {})));
+  }
+  return out;
+}
 
 (async function () {
+  // ---------- grouping ----------
+  await t('the days of one submitted request become one group, in date order, with their ids', async function () {
+    const sb = makeEnv().sb;
+    const rows = run('a', 'Pintoo', 'E4', 28, 3).reverse();      // fed in scrambled order
+    const g = sb.groupLeaveRequests_(rows);
+    assertEq(g.length, 1);
+    assertEq([g[0].name, g[0].dates, g[0].ids], ['Pintoo', ['2026-11-28', '2026-11-29', '2026-11-30'], ['a#1', 'a#2', 'a#3']]);
+  });
+
+  await t('separate requests stay separate: two different submits, two different advisors, or a plain single-day row', async function () {
+    const sb = makeEnv().sb;
+    const rows = [].concat(run('a', 'Pintoo', 'E4', 2, 2), run('b', 'Pintoo', 'E4', 9, 2), run('c', 'Nirmal', 'E7', 2, 2), run('solo', 'Amar', 'E2', 20, 1));
+    assertEq(sb.groupLeaveRequests_(rows).map((g) => [g.name, g.rows.length]).sort(), [['Amar', 1], ['Nirmal', 2], ['Pintoo', 2], ['Pintoo', 2]]);
+  });
+
+  await t('days of one request that are in different states are separate lines (e.g. one day was cancelled)', async function () {
+    const sb = makeEnv().sb;
+    const rows = run('a', 'Pintoo', 'E4', 2, 3);
+    rows[1].status = 'Cancelled';
+    const g = sb.groupLeaveRequests_(rows);
+    assertEq(g.map((x) => [x.status, x.dates.length]).sort(), [['Cancelled', 1], ['Pending', 2]]);
+  });
+
+  await t('ordering: pending first (soonest first), then decided (latest first)', async function () {
+    const sb = makeEnv().sb;
+    const rows = [].concat(
+      run('old', 'Old', 'E1', 1, 2, { status: 'Approved' }), run('far', 'Far', 'E2', 20, 2), run('new', 'New', 'E3', 12, 3, { status: 'Rejected' }), run('soon', 'Soon', 'E4', 3, 2));
+    assertEq(sb.groupLeaveRequests_(rows).map((g) => g.name), ['Soon', 'Far', 'New', 'Old']);
+  });
+
+  await t('consecutive days compress into ranges; a gap, a month end and a leap day are all handled', async function () {
+    const sb = makeEnv().sb;
+    assertEq(sb.leaveRanges_(['2026-11-27', '2026-11-28', '2026-12-01']), [['2026-11-27', '2026-11-28'], ['2026-12-01', '2026-12-01']]);
+    assertEq(sb.leaveRanges_(['2026-12-30', '2026-12-31', '2027-01-01', '2027-01-02']), [['2026-12-30', '2027-01-02']]);
+    assertEq(sb.leaveRanges_(['2028-02-28', '2028-02-29', '2028-03-01']), [['2028-02-28', '2028-03-01']]);
+    assertEq(sb.leaveRanges_(['2026-11-05']), [['2026-11-05', '2026-11-05']]);
+    assertEq(sb.nextDayKey_('2026-12-31'), '2027-01-01');
+  });
+
+  await t('the date text shows a range once, not every day', async function () {
+    const sb = makeEnv().sb;
+    const one = sb.fmtLeaveDate_('2026-11-28'), two = sb.fmtLeaveDate_('2026-12-05');
+    assertEq(sb.fmtLeaveRanges_(['2026-11-28', '2026-11-29', '2026-11-30', '2026-12-01', '2026-12-02', '2026-12-03', '2026-12-04', '2026-12-05']), one + ' – ' + two);
+    assertEq(sb.fmtLeaveRanges_(['2026-11-28']), one);
+  });
+
+  // ---------- rendering ----------
   await t('loading, empty and error states', async function () {
     assertEq(makeEnv().sb.renderLeaveRequestsCard_().indexOf('Loading…') > -1, true);
     assertEq(makeEnv({ LEAVE_REQS: [] }).sb.renderLeaveRequestsCard_().indexOf('No leave requests right now.') > -1, true);
@@ -54,108 +112,144 @@ const count = (html, re) => (html.match(re) || []).length;
     assertEq(err.indexOf('API request failed (404)') > -1 && err.indexOf('id="leaveReqRetry"') > -1, true);
   });
 
-  await t('the heading counts what is waiting, and says nothing when nothing is', async function () {
-    const two = makeEnv({ LEAVE_REQS: [req({ id: 'a' }), req({ id: 'b' }), req({ id: 'c', status: 'Approved' })] }).sb.renderLeaveRequestsCard_();
-    assertEq(two.indexOf('<span class="count-badge">2 pending</span>') > -1, true);
-    const none = makeEnv({ LEAVE_REQS: [req({ status: 'Approved' })] }).sb.renderLeaveRequestsCard_();
-    assertEq(none.indexOf('count-badge'), -1);
+  await t('THE SCREENSHOT CASE: Pintoo\'s eight days and Nirmal\'s two are two lines with two Approve buttons — not ten rows', async function () {
+    const rows = [].concat(run('p', 'Pintoo', 'E4', 28, 8), run('n', 'Nirmal', 'E7', 27, 2, { note: 'Marriage' }));
+    const html = makeEnv({ LEAVE_REQS: rows }).sb.renderLeaveRequestsCard_();
+    assertEq(count(html, /<tr class="leave-group"/g), 2);
+    assertEq(count(html, /data-decision="Approved"/g), 2);
+    assertEq(count(html, /data-decision="Rejected"/g), 2);
+    assertEq(html.indexOf('8 days') > -1 && html.indexOf('2 days') > -1, true);
+    assertEq(html.indexOf('Approve all') > -1 && html.indexOf('Reject all') > -1, true);
+    assertEq(count(html, /<tr class="leave-day"/g), 0, 'the individual days stay tucked away');
   });
 
-  await t('Pending rows get Approve + Reject; Approved/Rejected get Reopen; Cancelled get nothing', async function () {
-    const html = makeEnv({ LEAVE_REQS: [
-      req({ id: 'p', status: 'Pending' }), req({ id: 'a', status: 'Approved', decidedBy: 'Priya' }),
-      req({ id: 'j', status: 'Rejected', decidedBy: 'Raj' }), req({ id: 'c', status: 'Cancelled' })
-    ] }).sb.renderLeaveRequestsCard_();
-    assertEq(count(html, /data-decision="Approved"/g), 1);
-    assertEq(count(html, /data-decision="Rejected"/g), 1);
+  await t('the heading counts requests waiting, not days', async function () {
+    const rows = [].concat(run('p', 'Pintoo', 'E4', 28, 8), run('n', 'Nirmal', 'E7', 27, 2), run('d', 'Done', 'E9', 1, 3, { status: 'Approved' }));
+    assertEq(makeEnv({ LEAVE_REQS: rows }).sb.renderLeaveRequestsCard_().indexOf('<span class="count-badge">2 pending</span>') > -1, true);
+    assertEq(makeEnv({ LEAVE_REQS: run('d', 'Done', 'E9', 1, 3, { status: 'Approved' }) }).sb.renderLeaveRequestsCard_().indexOf('count-badge'), -1);
+  });
+
+  await t('a multi-day line decides all its days: its button carries every id', async function () {
+    const html = makeEnv({ LEAVE_REQS: run('p', 'Pintoo', 'E4', 28, 3) }).sb.renderLeaveRequestsCard_();
+    assertEq(html.indexOf('data-decide="p#1,p#2,p#3" data-decision="Approved"') > -1, true);
+    assertEq(html.indexOf('data-decide="p#1,p#2,p#3" data-decision="Rejected"') > -1, true);
+  });
+
+  await t('a single-day request looks as before: plain Approve / Reject, no "all", no days toggle', async function () {
+    const html = makeEnv({ LEAVE_REQS: [req({ id: 'one' })] }).sb.renderLeaveRequestsCard_();
+    assertEq(html.indexOf('>Approve<') > -1 && html.indexOf('>Reject<') > -1, true);
+    assertEq(html.indexOf('Approve all'), -1);
+    assertEq(html.indexOf('data-leave-toggle'), -1);
+    assertEq(html.indexOf('1 days'), -1);
+  });
+
+  await t('decided lines offer Reopen (all); cancelled ones offer nothing', async function () {
+    const html = makeEnv({ LEAVE_REQS: [].concat(
+      run('a', 'Amar', 'E2', 2, 3, { status: 'Approved', decidedBy: 'Priya' }), run('b', 'Ben', 'E3', 9, 1, { status: 'Rejected' }), run('c', 'Cy', 'E5', 15, 2, { status: 'Cancelled' })) }).sb.renderLeaveRequestsCard_();
+    assertEq(html.indexOf('Reopen all') > -1 && html.indexOf('>Reopen<') > -1, true);
     assertEq(count(html, /data-decision="Pending"/g), 2);
-    assertEq(html.indexOf('data-decide="p" data-decision="Approved"') > -1 && html.indexOf('data-decide="p" data-decision="Rejected"') > -1, true);
-    assertEq(html.indexOf('data-decide="c"'), -1, 'nothing to do on a cancelled request');
+    assertEq(html.indexOf('data-decide="c#'), -1);
+    assertEq(html.indexOf('by Priya') > -1, true);
   });
 
-  await t('shows who asked, the day, the type pill (Leave / Unpaid Leave neon via rc-L), the note, and who decided', async function () {
-    const html = makeEnv({ LEAVE_REQS: [
-      req({ id: 'a', name: 'Asha', code: 'UP', type: 'Unpaid Leave', note: 'family', status: 'Approved', decidedBy: 'Priya' }),
-      req({ id: 'b', name: 'Ben', code: 'WO', type: 'Week Off', status: 'Pending' })
-    ] }).sb.renderLeaveRequestsCard_();
-    assertEq(html.indexOf('>Asha<') > -1 && html.indexOf('>Ben<') > -1, true);
-    assertEq(html.indexOf('<span class="rc rc-L">Unpaid Leave</span>') > -1 && html.indexOf('<span class="rc rc-WO">Week Off</span>') > -1, true);
-    assertEq(html.indexOf('by Priya') > -1, true);
-    assertEq(html.indexOf('family') > -1, true);
+  await t('"Show days" opens a multi-day line out to its individual days, each with its own buttons', async function () {
+    const env = makeEnv({ LEAVE_REQS: run('p', 'Pintoo', 'E4', 28, 3) });
+    const key = env.sb.groupLeaveRequests_(env.sb.LEAVE_REQS)[0].key;
+    assertEq(env.sb.renderLeaveRequestsCard_().indexOf('Show days') > -1, true);
+    env.sb.LEAVE_REQS_OPEN = { [key]: true };
+    const html = env.sb.renderLeaveRequestsCard_();
+    assertEq(html.indexOf('Hide days') > -1 && /aria-expanded="true"/.test(html), true);
+    assertEq(count(html, /<tr class="leave-day"/g), 3);
+    assertEq(html.indexOf('data-decide="p#2" data-decision="Approved"') > -1, true, 'a single day can be decided on its own');
   });
 
   await t('names, notes and ids are escaped — nothing an advisor types can run', async function () {
     const html = makeEnv({ LEAVE_REQS: [req({ id: 'x"><b>', name: '<img src=x onerror=alert(1)>', note: '<script>alert(1)</script>' })] }).sb.renderLeaveRequestsCard_();
     assertEq(html.indexOf('<img') === -1 && html.indexOf('<script') === -1 && html.indexOf('"><b>') === -1, true);
-    assertEq(html.indexOf('&lt;img') > -1 && html.indexOf('&lt;script') > -1, true);
   });
 
   await t('while a decision is saving every button is disabled', async function () {
-    const html = makeEnv({ LEAVE_REQS_BUSY: true, LEAVE_REQS: [req({ id: 'p' }), req({ id: 'a', status: 'Approved' })] }).sb.renderLeaveRequestsCard_();
+    const html = makeEnv({ LEAVE_REQS_BUSY: true, LEAVE_REQS: [].concat(run('p', 'P', 'E4', 2, 3), run('a', 'A', 'E2', 20, 2, { status: 'Approved' })) }).sb.renderLeaveRequestsCard_();
     assertEq(count(html, /<button class="leave-(approve|reject|cancel)"[^>]* disabled>/g), 3);
   });
 
-  await t('ordering: pending first (soonest day first), then decided (newest day first)', async function () {
-    const sb = makeEnv().sb;
-    const out = sb.sortLeaveRequests_([
-      req({ id: 'dOld', date: '2026-10-01', status: 'Approved' }), req({ id: 'pLate', date: '2026-11-20' }),
-      req({ id: 'dNew', date: '2026-11-02', status: 'Rejected' }), req({ id: 'pSoon', date: '2026-11-03' })
-    ]);
-    assertEq(out.map((r) => r.id), ['pSoon', 'pLate', 'dNew', 'dOld']);
+  // ---------- clicking ----------
+  await t('clicking a line\'s Approve sends all its ids; the "days" toggle flips and redraws', async function () {
+    const clicks = {};
+    const mk = (attrs) => ({ getAttribute: (k) => attrs[k], addEventListener: (ev, fn) => { clicks[attrs['data-decide'] || attrs['data-leave-toggle']] = fn; } });
+    const env = makeEnv({
+      LEAVE_REQS: run('p', 'Pintoo', 'E4', 28, 3),
+      document: { getElementById: () => null, querySelectorAll: (sel) => sel === '[data-decide]' ? [mk({ 'data-decide': 'p#1,p#2,p#3', 'data-decision': 'Approved' })] : sel === '[data-leave-toggle]' ? [mk({ 'data-leave-toggle': 'k1' })] : [] }
+    });
+    env.sb.wireLeaveRequests_();
+    clicks['p#1,p#2,p#3']();
+    assertEq(env.apiCalls[0].ids, 'p#1,p#2,p#3');
+    clicks['k1']();
+    assertEq(env.sb.LEAVE_REQS_OPEN, { k1: true });
+    clicks['k1']();
+    assertEq(env.sb.LEAVE_REQS_OPEN, { k1: false });
   });
 
-  // ---- deciding ----
-  await t('Approve sends the decision with a requestId, locks the card, then updates the row and refreshes the roster grid', async function () {
-    const env = makeEnv({ LEAVE_REQS: [req({ id: 'a' }), req({ id: 'b', name: 'Ben', date: '2026-11-09' })] });
-    env.sb.decideLeave_('a', 'Approved');
+  // ---------- deciding ----------
+  await t('Approve on a multi-day line: one request with every id, locks the card, updates every day, refreshes the roster grid', async function () {
+    const env = makeEnv({ LEAVE_REQS: [].concat(run('p', 'Pintoo', 'E4', 28, 3), run('b', 'Ben', 'E3', 9, 1)) });
+    env.sb.decideLeave_(['p#1', 'p#2', 'p#3'], 'Approved');
     assertEq(env.sb.LEAVE_REQS_BUSY, true);
-    assertEq(env.apiCalls[0], { action: 'decideLeave', email: 'lead@wiom.in', id: 'a', decision: 'Approved', requestId: 'rid-1' });
-    await env.settle('resolve', { success: true, request: req({ id: 'a', status: 'Approved', decidedBy: 'Priya' }) });
+    assertEq(env.apiCalls.length, 1, 'one request for the whole line');
+    assertEq(env.apiCalls[0], { action: 'decideLeave', email: 'lead@wiom.in', ids: 'p#1,p#2,p#3', decision: 'Approved', requestId: 'rid-1' });
+    await env.settle('resolve', { success: true, changed: 3, skipped: 0, requests: run('p', 'Pintoo', 'E4', 28, 3, { status: 'Approved', decidedBy: 'Priya' }) });
     assertEq(env.sb.LEAVE_REQS_BUSY, false);
-    assertEq(env.sb.LEAVE_REQS.map((r) => [r.id, r.status]), [['b', 'Pending'], ['a', 'Approved']], 'the decided row moves below the pending one');
+    assertEq(env.sb.LEAVE_REQS.filter((r) => r.status === 'Approved').length, 3);
+    assertEq(env.sb.LEAVE_REQS.filter((r) => r.id === 'b')[0].status, 'Pending', 'someone else\'s request untouched');
     assertEq(env.sb.LEAVE_REQS_MSG.kind, 'ok');
-    assertEq(env.sb.LEAVE_REQS_MSG.text.indexOf('Approved Asha’s Leave on ') === 0, true);
-    assertEq(env.rosterLoads, 1, 'the grid is re-fetched so the approval shows straight away');
+    assertEq(env.sb.LEAVE_REQS_MSG.text.indexOf('Approved Pintoo’s Leave for 3 days (') === 0, true, env.sb.LEAVE_REQS_MSG.text);
+    assertEq(env.rosterLoads, 1);
     assertEq(env.cacheWrites[0][1], 'leavereqs');
   });
 
-  await t('Reject and Reopen word their confirmation correctly', async function () {
+  await t('a single day still works as before, with the single-day wording', async function () {
     const env = makeEnv({ LEAVE_REQS: [req({ id: 'a' })] });
-    env.sb.decideLeave_('a', 'Rejected');
+    env.sb.decideLeave_('a', 'Rejected');                       // a plain id is accepted too
+    assertEq(env.apiCalls[0].ids, 'a');
     await env.settle('resolve', { success: true, request: req({ id: 'a', status: 'Rejected', decidedBy: 'Priya' }) });
-    assertEq(env.sb.LEAVE_REQS_MSG.text.indexOf('Rejected Asha') === 0, true);
-    env.sb.decideLeave_('a', 'Pending');
-    await env.settle('resolve', { success: true, request: req({ id: 'a', status: 'Pending' }) });
-    assertEq(env.sb.LEAVE_REQS_MSG.text.indexOf('Reopened Asha') === 0, true);
+    assertEq(env.sb.LEAVE_REQS_MSG.text.indexOf('Rejected Asha’s Leave on ') === 0, true);
+  });
+
+  await t('Reopen wording; and days the advisor cancelled meanwhile are reported, not hidden', async function () {
+    const env = makeEnv({ LEAVE_REQS: run('p', 'Pintoo', 'E4', 2, 3, { status: 'Approved' }) });
+    env.sb.decideLeave_(['p#1', 'p#2', 'p#3'], 'Pending');
+    await env.settle('resolve', { success: true, changed: 2, skipped: 1, requests: run('p', 'Pintoo', 'E4', 2, 2, { status: 'Pending' }) });
+    assertEq(env.sb.LEAVE_REQS_MSG.text.indexOf('Reopened Pintoo') === 0, true);
+    assertEq(env.sb.LEAVE_REQS_MSG.text.indexOf('1 day was skipped — the advisor cancelled it.') > -1, true);
   });
 
   await t('a second click while one is saving does nothing', async function () {
-    const env = makeEnv({ LEAVE_REQS: [req({ id: 'a' }), req({ id: 'b' })] });
-    env.sb.decideLeave_('a', 'Approved');
-    env.sb.decideLeave_('b', 'Approved');
+    const env = makeEnv({ LEAVE_REQS: [].concat(run('a', 'A', 'E1', 2, 2), run('b', 'B', 'E2', 9, 2)) });
+    env.sb.decideLeave_(['a#1', 'a#2'], 'Approved');
+    env.sb.decideLeave_(['b#1', 'b#2'], 'Approved');
     assertEq(env.apiCalls.length, 1);
   });
 
-  await t('the server refusing (e.g. the advisor just cancelled) shows its reason and leaves the list alone', async function () {
-    const env = makeEnv({ LEAVE_REQS: [req({ id: 'a' })] });
-    env.sb.decideLeave_('a', 'Approved');
+  await t('the server refusing (e.g. the advisor just cancelled everything) shows its reason and leaves the list alone', async function () {
+    const env = makeEnv({ LEAVE_REQS: run('a', 'A', 'E1', 2, 2) });
+    env.sb.decideLeave_(['a#1', 'a#2'], 'Approved');
     await env.settle('resolve', { success: false, message: 'The advisor cancelled this request, so there is nothing to decide.' });
-    assertEq(env.sb.LEAVE_REQS[0].status, 'Pending');
+    assertEq(env.sb.LEAVE_REQS.every((r) => r.status === 'Pending'), true);
     assertEq(env.sb.LEAVE_REQS_MSG, { kind: 'err', text: 'The advisor cancelled this request, so there is nothing to decide.' });
     assertEq(env.rosterLoads, 0);
   });
 
   await t('no answer at all: says so, unlocks the card, and re-reads the real list instead of guessing', async function () {
-    const env = makeEnv({ LEAVE_REQS: [req({ id: 'a' })] });
-    env.sb.decideLeave_('a', 'Approved');
+    const env = makeEnv({ LEAVE_REQS: run('a', 'A', 'E1', 2, 2) });
+    env.sb.decideLeave_(['a#1', 'a#2'], 'Approved');
     await env.settle('reject', new Error('Server busy — please wait a moment and try again.'));
     assertEq(env.sb.LEAVE_REQS_BUSY, false);
     assertEq(env.sb.LEAVE_REQS_MSG.text.indexOf('Server busy') > -1 && env.sb.LEAVE_REQS_MSG.text.indexOf('whether it went through') > -1, true);
     assertEq(env.apiCalls[1].action, 'getLeaveRequests');
-    assertEq(env.sb.LEAVE_REQS[0].status, 'Pending', 'nothing is shown as decided that is not confirmed');
+    assertEq(env.sb.LEAVE_REQS.every((r) => r.status === 'Pending'), true, 'nothing shown as decided that is not confirmed');
   });
 
-  // ---- loading ----
+  // ---------- loading ----------
   await t('loading the list: ordered, and saved for next time', async function () {
     const env = makeEnv();
     const p = env.sb.loadLeaveRequests_();
@@ -180,7 +274,7 @@ const count = (html, re) => (html.match(re) || []).length;
     assertEq(saved.sb.LEAVE_REQS.length, 1);
   });
 
-  // ---- wiring into the manager screen ----
+  // ---------- wiring into the manager screen ----------
   await t('the card sits between the Day End Report and Recent Activity, is wired up, and is fetched with the poll', async function () {
     const team = appSrc.slice(appSrc.indexOf('function renderTeam() {'));
     const day = team.indexOf('Day End Report</h1>'), leave = team.indexOf('renderLeaveRequestsCard_()'), recent = team.indexOf('Recent Activity</h1>');

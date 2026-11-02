@@ -253,7 +253,10 @@ const ACTIONS = {
       .map(managerLeave_);
     return { requests: list.slice(0, 300) };
   },
-  // Approve, reject, or reopen (back to Pending) a request. Safe to repeat.
+  // Approve, reject, or reopen (back to Pending) one request or several at once — `ids` is a
+  // comma-separated list (one submitted request is one row per day; an older screen sends a
+  // single `id`). Rows the advisor cancelled meanwhile are skipped and counted; everything
+  // else is applied in one go. Safe to repeat.
   decideLeave: function (p) {
     const lock = LockService.getScriptLock();
     lock.waitLock(15000);
@@ -263,17 +266,45 @@ const ACTIONS = {
       if (!isManager_(res.emp)) throw new Error('Only team leads can approve or reject leave.');
       const decision = String(p.decision || '');
       if (LEAVE_DECISIONS.indexOf(decision) < 0) throw new Error('Choose Approve, Reject or Reopen.');
-      const row = readLeave_().filter(function (r) { return r.id === String(p.id || ''); })[0];
-      if (!row) throw new Error('That request was not found.');
-      if (row.email === String(res.emp.email).trim().toLowerCase()) throw new Error('You can\u2019t decide your own request. Ask another team lead.');
-      if (row.status === 'Cancelled') throw new Error('The advisor cancelled this request, so there is nothing to decide.');
-      if (row.status === decision) return { success: true, request: managerLeave_(row) };
+
+      const wanted = String(p.ids || p.id || '').split(',')
+        .map(function (x) { return x.trim(); })
+        .filter(function (x, i, all) { return x && all.indexOf(x) === i; });
+      if (!wanted.length) throw new Error('That request was not found.');
+      if (wanted.length > LEAVE_MAX_DAYS_PER_REQUEST * 4) throw new Error('That is too many requests to decide at once.');
+
+      const all = readLeave_();
+      const found = wanted.map(function (id) { return all.filter(function (r) { return r.id === id; })[0]; }).filter(Boolean);
+      if (!found.length) throw new Error('That request was not found.');
+      const me = String(res.emp.email).trim().toLowerCase();
+      if (found.some(function (r) { return r.email === me; })) throw new Error('You can\u2019t decide your own request. Ask another team lead.');
+
+      const todo = found.filter(function (r) { return r.status !== 'Cancelled' && r.status !== decision; });
+      const already = found.filter(function (r) { return r.status === decision; });
+      const cancelled = found.filter(function (r) { return r.status === 'Cancelled'; });
+      if (!todo.length && !already.length) throw new Error('The advisor cancelled this request, so there is nothing to decide.');
+
       const now = new Date();
       const reopened = decision === 'Pending';
+      const by = reopened ? '' : res.emp.name;
+      const at = reopened ? '' : now;
       const sh = getLeaveSheet_();
-      sh.getRange(row.rowNumber, LEAVE_COL.status).setValue(decision);
-      sh.getRange(row.rowNumber, LEAVE_COL.decidedBy, 1, 2).setValues([[reopened ? '' : res.emp.name, reopened ? '' : now]]);
-      return { success: true, request: managerLeave_(Object.assign({}, row, { status: decision, decidedBy: reopened ? '' : res.emp.name, decidedAt: reopened ? '' : now.toISOString() })) };
+      // One write per run of neighbouring sheet rows (a submitted request is saved as one block).
+      todo.sort(function (x, y) { return x.rowNumber - y.rowNumber; });
+      for (let i = 0; i < todo.length;) {
+        let j = i;
+        while (j + 1 < todo.length && todo[j + 1].rowNumber === todo[j].rowNumber + 1) j++;
+        const n = j - i + 1;
+        const first = todo[i].rowNumber;
+        sh.getRange(first, LEAVE_COL.status, n, 1).setValues(todo.slice(i, j + 1).map(function () { return [decision]; }));
+        sh.getRange(first, LEAVE_COL.decidedBy, n, 2).setValues(todo.slice(i, j + 1).map(function () { return [by, at]; }));
+        i = j + 1;
+      }
+      const updated = todo.map(function (r) {
+        return Object.assign({}, r, { status: decision, decidedBy: by, decidedAt: reopened ? '' : now.toISOString() });
+      }).concat(already);
+      updated.sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; });
+      return { success: true, requests: updated.map(managerLeave_), request: managerLeave_(updated[0]), changed: todo.length, skipped: cancelled.length };
     } catch (err) {
       return { success: false, message: err.message };
     } finally {

@@ -238,6 +238,101 @@ t('an Approved request of a retired type that is already in the sheet still show
   assertEq(idx(env, 'Asha').codes[2], 'UP');
 });
 
+// ---- deciding a whole submitted request (several days) in one go ----
+const batch = (env, who, n, id, type) => {
+  const days = Array.from({ length: n }, (_, i) => env.dayOf(i));
+  return env.A.submitLeave({ email: who, type: type || 'L', dates: days.join(','), note: '', requestId: id });
+};
+const many = (env, who, ids, decision) => env.A.decideLeave({ email: who, ids: ids.join(','), decision: decision });
+const statuses = (env) => env.leaveRows().slice(1).map((r) => r[8]);
+
+t('one Approve decides every day of a request, and each day shows in the roster grid', () => {
+  const env = makeEnv();
+  batch(env, 'asha@wiom.in', 3, 'grp');
+  const r = many(env, 'priya@wiom.in', ['grp#1', 'grp#2', 'grp#3'], 'Approved');
+  assertEq([r.success, r.changed, r.skipped, r.requests.length], [true, 3, 0, 3]);
+  assertEq(r.requests.map((x) => [x.id, x.status, x.decidedBy]), [['grp#1', 'Approved', 'Priya'], ['grp#2', 'Approved', 'Priya'], ['grp#3', 'Approved', 'Priya']]);
+  assertEq(statuses(env), ['Approved', 'Approved', 'Approved']);
+  assertEq(idx(env, 'Asha').codes.slice(0, 3), ['L', 'L', 'L']);
+});
+
+t('Reject, and Reopen, work on the whole request too (Reopen clears who decided)', () => {
+  const env = makeEnv();
+  batch(env, 'asha@wiom.in', 3, 'grp', 'HD');
+  many(env, 'raj@wiom.in', ['grp#1', 'grp#2', 'grp#3'], 'Rejected');
+  assertEq(statuses(env), ['Rejected', 'Rejected', 'Rejected']);
+  const re = many(env, 'raj@wiom.in', ['grp#1', 'grp#2', 'grp#3'], 'Pending');
+  assertEq(re.requests.map((x) => [x.status, x.decidedBy]), [['Pending', ''], ['Pending', ''], ['Pending', '']]);
+  assertEq(env.leaveRows().slice(1).map((r) => [r[9], r[10]]), [['', ''], ['', ''], ['', '']]);
+});
+
+t('a day the advisor cancelled in the meantime is skipped and counted — the rest are still decided', () => {
+  const env = makeEnv();
+  batch(env, 'asha@wiom.in', 3, 'grp');
+  env.A.cancelLeave({ email: 'asha@wiom.in', id: 'grp#2' });
+  const r = many(env, 'priya@wiom.in', ['grp#1', 'grp#2', 'grp#3'], 'Approved');
+  assertEq([r.success, r.changed, r.skipped, r.requests.map((x) => x.id)], [true, 2, 1, ['grp#1', 'grp#3']]);
+  assertEq(statuses(env), ['Approved', 'Cancelled', 'Approved']);
+});
+
+t('if every day was cancelled there is nothing to decide, and it says so', () => {
+  const env = makeEnv();
+  batch(env, 'asha@wiom.in', 2, 'grp');
+  env.A.cancelLeave({ email: 'asha@wiom.in', id: 'grp#1' });
+  env.A.cancelLeave({ email: 'asha@wiom.in', id: 'grp#2' });
+  const r = many(env, 'priya@wiom.in', ['grp#1', 'grp#2'], 'Approved');
+  assertEq(r.success, false);
+  assertEq(r.message.indexOf('cancelled') > -1, true);
+});
+
+t('repeating it, or deciding a request that is partly decided already, is harmless and reports only what changed', () => {
+  const env = makeEnv();
+  batch(env, 'asha@wiom.in', 3, 'grp');
+  env.A.decideLeave({ email: 'priya@wiom.in', id: 'grp#1', decision: 'Approved' });
+  const r = many(env, 'priya@wiom.in', ['grp#1', 'grp#2', 'grp#3'], 'Approved');
+  assertEq([r.success, r.changed, r.requests.length], [true, 2, 3]);
+  const again = many(env, 'priya@wiom.in', ['grp#1', 'grp#2', 'grp#3'], 'Approved');
+  assertEq([again.success, again.changed, again.requests.length], [true, 0, 3]);
+});
+
+t("only the days asked for change: another advisor's row, another request, and the days left out, are untouched", () => {
+  const env = makeEnv();
+  batch(env, 'asha@wiom.in', 3, 'a');                                                                     // a#1 a#2 a#3 (sheet rows 2-4)
+  env.A.submitLeave({ email: 'ben@wiom.in', type: 'L', dates: env.dayOf(1), note: '', requestId: 'b' });   // Ben's row sits after them
+  env.A.submitLeave({ email: 'asha@wiom.in', type: 'HD', dates: env.dayOf(5), note: '', requestId: 'c' }); // a second request of Asha's
+  const r = many(env, 'priya@wiom.in', ['a#1', 'a#3'], 'Approved');                                       // a#2 deliberately left out: rows 2 and 4 are not neighbours
+  assertEq([r.success, r.changed], [true, 2]);
+  const byId = {};
+  env.leaveRows().slice(1).forEach((row) => { byId[row[0]] = row[8]; });
+  assertEq(byId, { 'a#1': 'Approved', 'a#2': 'Pending', 'a#3': 'Approved', b: 'Pending', c: 'Pending' });
+});
+
+t('unknown ids in the list are ignored; a list of only unknown ids is "not found"', () => {
+  const env = makeEnv();
+  batch(env, 'asha@wiom.in', 2, 'grp');
+  assertEq(many(env, 'priya@wiom.in', ['grp#1', 'nope'], 'Approved').changed, 1);
+  assertEq(many(env, 'priya@wiom.in', ['nope', 'nada'], 'Approved').message, 'That request was not found.');
+});
+
+t('a team lead cannot decide a request that includes their own days; advisors cannot decide any', () => {
+  const env = makeEnv();
+  batch(env, 'priya@wiom.in', 2, 'mine');
+  const own = many(env, 'priya@wiom.in', ['mine#1', 'mine#2'], 'Approved');
+  assertEq(own.success, false);
+  assertEq(own.message.indexOf('own request') > -1, true);
+  assertEq(statuses(env), ['Pending', 'Pending']);
+  assertEq(many(env, 'raj@wiom.in', ['mine#1', 'mine#2'], 'Approved').changed, 2, 'another lead can');
+  batch(env, 'asha@wiom.in', 2, 'x');
+  assertEq(many(env, 'ben@wiom.in', ['x#1', 'x#2'], 'Approved').message, 'Only team leads can approve or reject leave.');
+});
+
+t('a screen that still sends one `id` works exactly as before', () => {
+  const env = makeEnv();
+  env.submit('asha@wiom.in', 'L', env.dayOf(1), 'single');
+  const r = env.A.decideLeave({ email: 'priya@wiom.in', id: 'single', decision: 'Approved' });
+  assertEq([r.success, r.request.status, r.requests.length], [true, 'Approved', 1]);
+});
+
 t('Work From Home cannot be requested, so an approval can never touch the office-range rule', () => {
   const env = makeEnv();
   const todayIdx = env.week.findIndex((d) => d.key === env.todayKey);

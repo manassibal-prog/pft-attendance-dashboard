@@ -206,7 +206,7 @@ function actionEnv() {
       TEAM: null, TEAM_STALE: false, TEAM_ERROR: null, RECENT_LOG: null, TEAM_ROSTER: null, TEAM_ROSTER_FRESH: false, DAY_REPORT: null,
       STATE: freshState(), STATE_LOADED: false, STATE_LOAD_ERROR: null, STATE_PENDING_NOTE: null, STATE_RECHECK: null, ACTION_IN_FLIGHT: false,
       LEAVE: null, LEAVE_ERROR: null, LEAVE_BUSY: false, LEAVE_MSG: null, LEAVE_DRAFT: { dates: [], type: 'L', note: '' }, LEAVE_CAL: null,
-      LEAVE_REQS: null, LEAVE_REQS_ERROR: null, LEAVE_REQS_BUSY: false, LEAVE_REQS_MSG: null, leaveReqPollCount: 0,
+      LEAVE_REQS: null, LEAVE_REQS_ERROR: null, LEAVE_REQS_BUSY: false, LEAVE_REQS_MSG: null, LEAVE_REQS_OPEN: {}, leaveReqPollCount: 0,
       freshState_: freshState,
       localDay: function () { return '2026-10-05'; },
       cacheGet: function (email, name, valid) {

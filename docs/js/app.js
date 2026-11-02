@@ -60,6 +60,7 @@ let LEAVE_REQS = null;
 let LEAVE_REQS_ERROR = null;
 let LEAVE_REQS_BUSY = false;
 let LEAVE_REQS_MSG = null;
+let LEAVE_REQS_OPEN = {}; // group key -> true while its days are shown one by one
 let leaveReqPollCount = 0;
 let ACTIVE_TAB = 'me';
 let TEAM = null;
@@ -304,7 +305,7 @@ function resetSessionData_() {
   STATE_PENDING_NOTE = null; STATE_RECHECK = null;
   ACTION_IN_FLIGHT = false;
   LEAVE = null; LEAVE_ERROR = null; LEAVE_BUSY = false; LEAVE_MSG = null; LEAVE_DRAFT = { dates: [], type: 'L', note: '' }; LEAVE_CAL = null;
-  LEAVE_REQS = null; LEAVE_REQS_ERROR = null; LEAVE_REQS_BUSY = false; LEAVE_REQS_MSG = null; leaveReqPollCount = 0;
+  LEAVE_REQS = null; LEAVE_REQS_ERROR = null; LEAVE_REQS_BUSY = false; LEAVE_REQS_MSG = null; LEAVE_REQS_OPEN = {}; leaveReqPollCount = 0;
 }
 
 // Paints the last-seen data before the live requests answer. Only fills what
@@ -1051,10 +1052,75 @@ function sortLeaveRequests_(list) {
   });
 }
 
+// A request of several days is saved as one row per day (ids "<request>#<n>"), but a
+// team lead decides it as one thing: rows that belong to the same submitted request
+// and share a status are shown as one line. Pending requests first (soonest first),
+// then decided ones, newest first.
+function groupLeaveRequests_(list) {
+  const groups = [], byKey = {};
+  list.forEach(function (r) {
+    const key = [r.empId, String(r.id).split('#')[0], r.status, r.code].join('|');
+    let g = byKey[key];
+    if (!g) {
+      g = byKey[key] = { key: key, name: r.name, empId: r.empId, code: r.code, type: r.type, note: r.note, status: r.status, decidedBy: '', rows: [] };
+      groups.push(g);
+    }
+    g.rows.push(r);
+    if (!g.decidedBy && r.decidedBy) g.decidedBy = r.decidedBy;
+  });
+  groups.forEach(function (g) {
+    g.rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    g.dates = g.rows.map(function (r) { return r.date; });
+    g.ids = g.rows.map(function (r) { return r.id; });
+  });
+  return groups.sort(function (a, b) {
+    const ap = a.status === 'Pending', bp = b.status === 'Pending';
+    if (ap !== bp) return ap ? -1 : 1;
+    const ad = ap ? a.dates[0] : a.dates[a.dates.length - 1];
+    const bd = bp ? b.dates[0] : b.dates[b.dates.length - 1];
+    if (ad === bd) return 0;
+    return ap ? (ad < bd ? -1 : 1) : (ad < bd ? 1 : -1);
+  });
+}
+
+function nextDayKey_(key) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ''));
+  return m ? ymd_(new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1)) : '';
+}
+// ['2026-11-27','2026-11-28','2026-12-01'] -> [['2026-11-27','2026-11-28'],['2026-12-01','2026-12-01']]
+function leaveRanges_(dates) {
+  const out = [];
+  dates.forEach(function (d) {
+    const last = out[out.length - 1];
+    if (last && nextDayKey_(last[1]) === d) last[1] = d; else out.push([d, d]);
+  });
+  return out;
+}
+function fmtLeaveRanges_(dates) {
+  return leaveRanges_(dates).map(function (r) {
+    return r[0] === r[1] ? fmtLeaveDate_(r[0]) : fmtLeaveDate_(r[0]) + ' – ' + fmtLeaveDate_(r[1]);
+  }).join(', ');
+}
+
+function leaveDecisionButtons_(ids, status, several) {
+  const list = esc_(ids.join(','));
+  const off = LEAVE_REQS_BUSY ? ' disabled' : '';
+  const all = several ? ' all' : '';
+  if (status === 'Pending') {
+    return '<button class="leave-approve" type="button" data-decide="' + list + '" data-decision="Approved"' + off + '>Approve' + all + '</button>' +
+           '<button class="leave-reject" type="button" data-decide="' + list + '" data-decision="Rejected"' + off + '>Reject' + all + '</button>';
+  }
+  if (status === 'Approved' || status === 'Rejected') {
+    return '<button class="leave-cancel" type="button" data-decide="' + list + '" data-decision="Pending"' + off + '>Reopen' + all + '</button>';
+  }
+  return '';
+}
+
 function renderLeaveRequestsCard_() {
-  const pending = LEAVE_REQS ? LEAVE_REQS.filter(function (r) { return r.status === 'Pending'; }).length : 0;
+  const groups = LEAVE_REQS ? groupLeaveRequests_(LEAVE_REQS) : [];
+  const pending = groups.filter(function (g) { return g.status === 'Pending'; }).length;
   let html = '<div class="card"><h1>Leave Requests' + (pending ? '<span class="count-badge">' + pending + ' pending</span>' : '') + '</h1>' +
-    '<div class="sub">Approve or reject leave and half-day requests. Approved ones show in the roster and the reports.</div>';
+    '<div class="sub">Approve or reject leave and half-day requests. A request of several days is one line. Approved ones show in the roster and the reports.</div>';
   html += '<div class="leave-msg">' + (LEAVE_REQS_MSG ? '<div class="status ' + (LEAVE_REQS_MSG.kind === 'ok' ? 'ok' : 'err') + '">' + esc_(LEAVE_REQS_MSG.text) + '</div>' : '') + '</div>';
 
   if (LEAVE_REQS === null) {
@@ -1064,24 +1130,26 @@ function renderLeaveRequestsCard_() {
   } else if (!LEAVE_REQS.length) {
     html += '<div class="sub" style="margin:4px 0 0;">No leave requests right now.</div>';
   } else {
-    const off = LEAVE_REQS_BUSY ? ' disabled' : '';
     html += '<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Advisor</th><th>Date</th><th>Type</th><th>Note</th><th>Status</th><th></th></tr></thead><tbody>';
-    LEAVE_REQS.forEach(function (r) {
-      const id = esc_(r.id);
-      let actions = '';
-      if (r.status === 'Pending') {
-        actions = '<button class="leave-approve" type="button" data-decide="' + id + '" data-decision="Approved"' + off + '>Approve</button>' +
-                  '<button class="leave-reject" type="button" data-decide="' + id + '" data-decision="Rejected"' + off + '>Reject</button>';
-      } else if (r.status === 'Approved' || r.status === 'Rejected') {
-        actions = '<button class="leave-cancel" type="button" data-decide="' + id + '" data-decision="Pending"' + off + '>Reopen</button>';
+    groups.forEach(function (g) {
+      const several = g.rows.length > 1;
+      const open = several && !!LEAVE_REQS_OPEN[g.key];
+      html += '<tr class="leave-group"><td class="dt-name">' + esc_(g.name) + '</td>' +
+        '<td>' + fmtLeaveRanges_(g.dates) + (several ? '<div class="team-sub">' + g.rows.length + ' days</div>' : '') + '</td>' +
+        '<td><span class="rc ' + rosterCodeClass(g.code) + '">' + esc_(g.type) + '</span></td>' +
+        '<td class="leave-note">' + esc_(g.note || '—') + '</td>' +
+        '<td><span class="status-pill st-' + esc_(g.status) + '">' + esc_(g.status) + '</span>' +
+          (g.decidedBy && g.status !== 'Pending' ? '<div class="team-sub">by ' + esc_(g.decidedBy) + '</div>' : '') + '</td>' +
+        '<td><div class="leave-actions">' + leaveDecisionButtons_(g.ids, g.status, several) + '</div>' +
+          (several ? '<button type="button" class="leave-toggle" data-leave-toggle="' + esc_(g.key) + '" aria-expanded="' + open + '">' + (open ? 'Hide days ▴' : 'Show days ▾') + '</button>' : '') +
+        '</td></tr>';
+      if (open) {
+        g.rows.forEach(function (r) {
+          html += '<tr class="leave-day"><td></td><td>' + fmtLeaveDate_(r.date) + '</td><td></td><td></td>' +
+            '<td><span class="status-pill st-' + esc_(r.status) + '">' + esc_(r.status) + '</span></td>' +
+            '<td><div class="leave-actions">' + leaveDecisionButtons_([r.id], r.status, false) + '</div></td></tr>';
+        });
       }
-      html += '<tr><td class="dt-name">' + esc_(r.name) + '</td>' +
-        '<td>' + fmtLeaveDate_(r.date) + '</td>' +
-        '<td><span class="rc ' + rosterCodeClass(r.code) + '">' + esc_(r.type) + '</span></td>' +
-        '<td class="leave-note">' + esc_(r.note || '—') + '</td>' +
-        '<td><span class="status-pill st-' + esc_(r.status) + '">' + esc_(r.status) + '</span>' +
-          (r.decidedBy && r.status !== 'Pending' ? '<div class="team-sub">by ' + esc_(r.decidedBy) + '</div>' : '') + '</td>' +
-        '<td><div class="leave-actions">' + actions + '</div></td></tr>';
     });
     html += '</tbody></table></div>';
   }
@@ -1090,7 +1158,14 @@ function renderLeaveRequestsCard_() {
 
 function wireLeaveRequests_() {
   document.querySelectorAll('[data-decide]').forEach(function (el) {
-    el.addEventListener('click', function () { decideLeave_(el.getAttribute('data-decide'), el.getAttribute('data-decision')); });
+    el.addEventListener('click', function () { decideLeave_(el.getAttribute('data-decide').split(','), el.getAttribute('data-decision')); });
+  });
+  document.querySelectorAll('[data-leave-toggle]').forEach(function (el) {
+    el.addEventListener('click', function () {
+      const key = el.getAttribute('data-leave-toggle');
+      LEAVE_REQS_OPEN[key] = !LEAVE_REQS_OPEN[key];
+      renderTeam();
+    });
   });
   const retry = document.getElementById('leaveReqRetry');
   if (retry) retry.addEventListener('click', function () { LEAVE_REQS_ERROR = null; renderTeam(); loadLeaveRequests_(); });
@@ -1111,23 +1186,33 @@ function loadLeaveRequests_() {
     });
 }
 
-// Approve / reject / reopen. The request carries a requestId so a reply lost on
-// the way back is retried safely; the decision itself is also safe to repeat.
-function decideLeave_(id, decision) {
+// Approve / reject / reopen one or several days (a whole submitted request is one click).
+// The request carries a requestId so a reply lost on the way back is retried safely; the
+// decision itself is also safe to repeat. Days the advisor cancelled meanwhile are skipped
+// by the server and reported back.
+function decideLeave_(ids, decision) {
   if (LEAVE_REQS_BUSY) return;
+  const list = Array.isArray(ids) ? ids : [ids];
   const email = CURRENT.email;
   const done = { Approved: 'Approved', Rejected: 'Rejected', Pending: 'Reopened' }[decision] || decision;
   LEAVE_REQS_BUSY = true;
   LEAVE_REQS_MSG = null;
   renderTeam();
-  return api({ action: 'decideLeave', email: email, id: id, decision: decision, requestId: newRequestId_() })
+  return api({ action: 'decideLeave', email: email, ids: list.join(','), decision: decision, requestId: newRequestId_() })
     .then(function (res) {
       LEAVE_REQS_BUSY = false;
       if (res.success) {
-        const q = res.request;
-        LEAVE_REQS = sortLeaveRequests_((LEAVE_REQS || []).map(function (r) { return r.id === q.id ? q : r; }));
+        const updated = res.requests || [res.request];
+        const byId = {};
+        updated.forEach(function (q) { byId[q.id] = q; });
+        LEAVE_REQS = sortLeaveRequests_((LEAVE_REQS || []).map(function (r) { return byId[r.id] || r; }));
         cacheSet(email, 'leavereqs', LEAVE_REQS);
-        LEAVE_REQS_MSG = { kind: 'ok', text: done + ' ' + q.name + '’s ' + q.type + ' on ' + fmtLeaveDate_(q.date) + '.' };
+        const q = updated[0];
+        const what = updated.length > 1
+          ? q.name + '’s ' + q.type + ' for ' + updated.length + ' days (' + fmtLeaveRanges_(updated.map(function (u) { return u.date; }).sort()) + ')'
+          : q.name + '’s ' + q.type + ' on ' + fmtLeaveDate_(q.date);
+        const skipped = res.skipped ? ' ' + res.skipped + (res.skipped > 1 ? ' days were' : ' day was') + ' skipped — the advisor cancelled ' + (res.skipped > 1 ? 'them' : 'it') + '.' : '';
+        LEAVE_REQS_MSG = { kind: 'ok', text: done + ' ' + what + '.' + skipped };
         loadTeamRoster(); // the grid shows approved leave; fetch it again now
       } else {
         LEAVE_REQS_MSG = { kind: 'err', text: res.message };
