@@ -142,7 +142,7 @@ const ACTIONS = {
       .sort(function (a, b) { return a.date === b.date ? 0 : (a.date < b.date ? 1 : -1); });
     return { requests: mine.slice(0, 100) };
   },
-  // Marks one or several days as Leave / Half Day / Unpaid Leave / Week Off — `dates` is
+  // Marks one or several days as Leave / Half Day — `dates` is
   // a comma-separated list of YYYY-MM-DD (an older screen sends a single `date`).
   // One Pending row per day. All days are checked first and saved together in one
   // write, so a request is either fully saved or not at all.
@@ -155,7 +155,7 @@ const ACTIONS = {
       const emp = res.emp;
       const email = String(emp.email).trim().toLowerCase();
       const code = String(p.type || '').toUpperCase();
-      if (!LEAVE_TYPES[code]) throw new Error('Choose what you are marking: Leave, Half Day, Unpaid Leave or Week Off.');
+      if (!LEAVE_TYPES[code]) throw new Error('Choose what you are marking: Leave or Half Day.');
 
       const dateKeys = String(p.dates || p.date || '').split(',')
         .map(function (d) { return d.trim(); })
@@ -1028,7 +1028,10 @@ const EVENT_LABEL = {
 // ---------- Leave & half-day requests ----------
 // One row per request in the "Leave Requests" tab (created on first use). The
 // advisor sees and cancels their own; the team lead approves by changing Status.
-const LEAVE_TYPES = { L: 'Leave', HD: 'Half Day', UP: 'Unpaid Leave', WO: 'Week Off' };
+// What an advisor can ask for.
+const LEAVE_TYPES = { L: 'Leave', HD: 'Half Day' };
+// No longer offered, but requests already in the sheet still read (and, once approved, still show) as before.
+const LEAVE_LEGACY_TYPES = { UP: 'Unpaid Leave', WO: 'Week Off', WFH: 'Work From Home' };
 const LEAVE_HEADERS = ['Request ID', 'Submitted At', 'Emp ID', 'Employee Name', 'Email', 'Date', 'Type', 'Note', 'Status', 'Decided By', 'Decided At'];
 const LEAVE_STATUSES = ['Pending', 'Approved', 'Rejected', 'Cancelled'];
 const LEAVE_COL = { id: 1, submitted: 2, empId: 3, name: 4, email: 5, date: 6, type: 7, note: 8, status: 9, decidedBy: 10, decidedAt: 11 };
@@ -1064,6 +1067,7 @@ function leaveStatus_(v) {
 function leaveCodeForLabel_(label) {
   const lower = String(label || '').trim().toLowerCase();
   for (const code in LEAVE_TYPES) if (LEAVE_TYPES[code].toLowerCase() === lower) return code;
+  for (const code in LEAVE_LEGACY_TYPES) if (LEAVE_LEGACY_TYPES[code].toLowerCase() === lower) return code;
   return '';
 }
 function readLeave_() {

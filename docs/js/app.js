@@ -442,7 +442,7 @@ function onUser(res) {
     setBaseDataFooter_(false);
     return;
   }
-  setBaseDataFooter_(true);
+  setBaseDataFooter_(IS_MANAGER); // the raw data link is for team leads, not advisors
   hydrateFromCache_();
   renderShell();
   if (!IS_MANAGER) {
@@ -770,7 +770,8 @@ window.addEventListener('beforeunload', function (e) {
 // Advisors mark a day here; it lands as a Pending row in the Leave Requests
 // tab, where the team lead approves it. Each submit carries a requestId, so a
 // reply lost on the way back is retried without creating a second request.
-const LEAVE_TYPES = [['L', 'Leave'], ['HD', 'Half Day'], ['UP', 'Unpaid Leave'], ['WO', 'Week Off']];
+// What an advisor can ask for. (Older requests of other kinds still display fine — rows draw from their own code.)
+const LEAVE_TYPES = [['L', 'Leave'], ['HD', 'Half Day']];
 
 function esc_(v) {
   return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -903,7 +904,7 @@ function renderLeaveSelection_() {
 
 function renderLeaveCard_() {
   const n = LEAVE_DRAFT.dates.length;
-  let html = '<div class="card"><h1>Leave &amp; Half Day</h1>' +
+  let html = '<div class="card"><h1>Leave Requests</h1>' +
     '<div class="sub">Pick one day or several, choose what it is, and submit. Your team lead approves each day.</div>';
   html += '<div class="leave-layout">' + renderLeaveCalendar_() +
     '<div class="leave-form">' +
@@ -1053,7 +1054,7 @@ function sortLeaveRequests_(list) {
 function renderLeaveRequestsCard_() {
   const pending = LEAVE_REQS ? LEAVE_REQS.filter(function (r) { return r.status === 'Pending'; }).length : 0;
   let html = '<div class="card"><h1>Leave Requests' + (pending ? '<span class="count-badge">' + pending + ' pending</span>' : '') + '</h1>' +
-    '<div class="sub">Approve or reject leave, half day, unpaid leave and week off. Approved ones show in the roster and the reports.</div>';
+    '<div class="sub">Approve or reject leave and half-day requests. Approved ones show in the roster and the reports.</div>';
   html += '<div class="leave-msg">' + (LEAVE_REQS_MSG ? '<div class="status ' + (LEAVE_REQS_MSG.kind === 'ok' ? 'ok' : 'err') + '">' + esc_(LEAVE_REQS_MSG.text) + '</div>' : '') + '</div>';
 
   if (LEAVE_REQS === null) {

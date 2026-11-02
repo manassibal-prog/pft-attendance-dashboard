@@ -1,4 +1,4 @@
-// The advisor's "Leave & Half Day" card in docs/js/app.js: the click-to-select
+// The advisor's "Leave Requests" card in docs/js/app.js: the click-to-select
 // calendar, how the card renders, and how submit / cancel / load behave.
 // Sliced out of the real file and run in a vm with a scripted api(), since
 // app.js can't load in Node.
@@ -194,15 +194,16 @@ const keyOf = (btn) => /data-cal-day="([^"]+)"/.exec(btn)[1];
   // ---------- the rest of the card ----------
   await t('loading: shows Loading… before the list arrives, but the calendar and form are already usable', async function () {
     const html = makeEnv().sb.renderLeaveCard_();
-    assertEq(html.indexOf('Leave &amp; Half Day') > -1 && html.indexOf('Loading…') > -1, true);
+    assertEq(html.indexOf('<h1>Leave Requests</h1>') > -1 && html.indexOf('Loading…') > -1, true);
+    assertEq(html.indexOf('Half Day</h1>'), -1, 'the old heading is gone');
     assertEq(html.indexOf('class="cal"') > -1 && html.indexOf('id="leaveType"') > -1 && html.indexOf('id="leaveNote"') > -1, true);
   });
 
-  await t('the type list offers exactly Leave, Half Day, Unpaid Leave, Week Off — no Work From Home', async function () {
+  await t('the type list offers exactly Leave and Half Day', async function () {
     const html = makeEnv().sb.renderLeaveCard_();
     const options = (html.match(/<option value="([A-Z]+)"[^>]*>([^<]+)</g) || []).map((o) => o.replace(/<option value="([A-Z]+)"[^>]*>([^<]+)</, '$1=$2'));
-    assertEq(options, ['L=Leave', 'HD=Half Day', 'UP=Unpaid Leave', 'WO=Week Off']);
-    assertEq(html.indexOf('Work From Home') === -1 && html.indexOf('work from home') === -1, true);
+    assertEq(options, ['L=Leave', 'HD=Half Day']);
+    assertEq(/Unpaid|Week Off|Work From Home/i.test(html), false, 'no other kind is offered or mentioned on the card');
   });
 
   await t('there is no single-date box any more', async function () {
@@ -214,7 +215,7 @@ const keyOf = (btn) => /data-cal-day="([^"]+)"/.exec(btn)[1];
     assertEq(html.indexOf('No requests yet') > -1 && html.indexOf('<table') === -1, true);
   });
 
-  await t('a list shows date, type pill (Leave / Unpaid Leave use the neon class), note and status; only Pending has Cancel', async function () {
+  await t('a list shows date, type pill (Leave / Unpaid Leave use the neon class — older rows of retired types still draw), note and status; only Pending has Cancel', async function () {
     const html = makeEnv({ LEAVE: [
       req({ id: 'a', code: 'L', type: 'Leave', status: 'Pending', note: 'fever' }),
       req({ id: 'b', code: 'UP', type: 'Unpaid Leave', status: 'Approved', date: '2026-11-04' }),

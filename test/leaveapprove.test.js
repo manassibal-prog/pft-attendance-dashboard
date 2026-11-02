@@ -153,7 +153,7 @@ t('the list puts pending first (soonest day first), then decided newest first, w
   const env = makeEnv();
   env.submit('asha@wiom.in', 'L', env.dayOf(3), 'late');
   env.submit('ben@wiom.in', 'HD', env.dayOf(1), 'soon');
-  env.submit('asha@wiom.in', 'WO', env.dayOf(5), 'decided');
+  env.submit('asha@wiom.in', 'HD', env.dayOf(5), 'decided');
   env.decide('priya@wiom.in', 'decided', 'Approved');
   // two requests from long ago: one still pending (must stay), one decided (must drop)
   const old = new Date(); old.setDate(old.getDate() - 45);
@@ -179,11 +179,11 @@ t('Roster grid: an APPROVED request shows in the right person\'s cell, over what
 
 t('Roster grid: every type is shown as its own code', () => {
   const env = makeEnv();
-  [['L', 0], ['HD', 1], ['UP', 2], ['WO', 3]].forEach(([code, d]) => {
+  [['L', 0], ['HD', 1]].forEach(([code, d]) => {
     env.submit('asha@wiom.in', code, env.dayOf(d), 'x' + code);
     env.decide('priya@wiom.in', 'x' + code, 'Approved');
   });
-  assertEq(idx(env, 'Asha').codes.slice(0, 4), ['L', 'HD', 'UP', 'WO']);
+  assertEq(idx(env, 'Asha').codes.slice(0, 2), ['L', 'HD']);
 });
 
 t('Roster grid: pending, rejected and cancelled requests change nothing; reopening takes an approval back off', () => {
@@ -216,7 +216,7 @@ t('Team Status: an advisor on approved leave today shows it instead of the Roste
 
 t('Day End Report: approved leave shows for that date; a day someone punched in keeps the real status', () => {
   const env = makeEnv();
-  env.submit('asha@wiom.in', 'UP', env.dayOf(1), 'a1');
+  env.submit('asha@wiom.in', 'HD', env.dayOf(1), 'a1');
   env.decide('priya@wiom.in', 'a1', 'Approved');
   env.submit('ben@wiom.in', 'L', env.dayOf(1), 'b1');
   env.decide('priya@wiom.in', 'b1', 'Approved');
@@ -225,10 +225,17 @@ t('Day End Report: approved leave shows for that date; a day someone punched in 
   const report = env.A.getDayEndReport({ email: 'priya@wiom.in', date: env.dayOf(1) });
   const status = {};
   report.employees.forEach((e) => { status[e.name] = e.status; });
-  assertEq(status, { Asha: 'UP', Ben: 'Present' });
+  assertEq(status, { Asha: 'HD', Ben: 'Present' });
   const other = {};
   env.A.getDayEndReport({ email: 'priya@wiom.in', date: env.dayOf(2) }).employees.forEach((e) => { other[e.name] = e.status; });
   assertEq(other.Asha, 'P', 'a different day is unaffected');
+});
+
+t('an Approved request of a retired type that is already in the sheet still shows in the grid', () => {
+  const env = makeEnv();
+  env.A.getMyLeave({ email: 'asha@wiom.in' });                // creates the Leave Requests tab
+  env.leaveRows().push(['old', new Date(), 'E1', 'Asha', 'asha@wiom.in', env.week[2].date, 'Unpaid Leave', '', 'Approved', 'Priya', new Date()]);
+  assertEq(idx(env, 'Asha').codes[2], 'UP');
 });
 
 t('Work From Home cannot be requested, so an approval can never touch the office-range rule', () => {
