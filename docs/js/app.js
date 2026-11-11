@@ -222,50 +222,69 @@ function renderSignIn(errorMsg) {
 // ---------- Pick up new versions without anyone having to refresh ----------
 // This is a single page people leave open for days, so a deploy never reaches
 // an open tab until it is reloaded — fixes sit unused while the old code keeps
-// misbehaving. Every few minutes, compare the deployed files' ETags with the
-// ones this tab loaded; on a change, reload quietly while nobody is looking
-// (tab hidden), otherwise show a "Reload now" bar. Never while a punch is
-// saving. If the headers can't be read the check does nothing.
+// misbehaving. Every few minutes, compare the deployed files with the ones this
+// tab is running; on a change, reload quietly while nobody is looking (tab
+// hidden), otherwise show a "Reload now" bar. Never while a punch is saving.
+//
+// The comparison is on the files' CONTENT, not their ETag / Last-Modified:
+// GitHub Pages sits on several servers whose copies of the same file carry
+// timestamps a second apart (and a different ETag with and without gzip), so
+// header comparison cried "new version!" when nothing had been deployed.
 const VERSION_FILES = ['./', 'js/app.js', 'js/db.js', 'js/http.js', 'js/cache.js', 'js/auth.js', 'js/config.js'];
 const VERSION_CHECK_MS = 5 * 60 * 1000;
 let loadedVersion = null;
 let latestVersion = null;
 
-function fetchVersion_() {
+function hashText_(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
+  return s.length + ':' + h.toString(36);
+}
+
+function versionUrl_(f) { return new URL(f, location.href).href; }
+
+// cacheMode 'default' = what this tab loaded (the browser's cached copy);
+// 'no-store' = what is deployed right now.
+function fetchVersion_(cacheMode) {
   return Promise.all(VERSION_FILES.map(function (f) {
-    return fetch(new URL(f, location.href).href, { method: 'HEAD', cache: 'no-store' })
-      .then(function (r) { return r.ok ? (r.headers.get('etag') || r.headers.get('last-modified') || '') : ''; });
+    return fetch(versionUrl_(f), { cache: cacheMode })
+      .then(function (r) { return r.ok ? r.text().then(hashText_) : ''; });
   })).then(function (parts) {
     return parts.every(function (p) { return p; }) ? parts.join('|') : null;
   });
 }
 
 function checkForUpdate_() {
-  return fetchVersion_().then(function (v) {
+  if (loadedVersion === null) {
+    return fetchVersion_('default').then(function (v) { if (v) loadedVersion = v; }).catch(function () {});
+  }
+  return fetchVersion_('no-store').then(function (v) {
     if (!v) return;
-    if (loadedVersion === null) { loadedVersion = v; return; }
     if (v !== loadedVersion) { latestVersion = v; applyUpdate_(); }
   }).catch(function () { /* offline etc. — try again next time */ });
 }
 
+// Pages lets browsers keep these files for 10 minutes, so a plain reload can
+// bring the OLD code straight back. Refresh the cached copies first.
+function reloadForUpdate_() {
+  try { sessionStorage.setItem('pft-reloaded-for', latestVersion); } catch (_) {}
+  Promise.all(VERSION_FILES.map(function (f) {
+    return fetch(versionUrl_(f), { cache: 'reload' }).catch(function () {});
+  })).then(function () { location.reload(); });
+}
+
 function applyUpdate_() {
   if (!latestVersion || ACTION_IN_FLIGHT) return;
-  if (document.hidden) {
-    // Once per version: if the headers ever flap, never reload-loop.
-    try {
-      if (sessionStorage.getItem('pft-reloaded-for') === latestVersion) return;
-      sessionStorage.setItem('pft-reloaded-for', latestVersion);
-    } catch (_) {}
-    location.reload();
-    return;
-  }
+  // Once per version: whatever happens, never a reload loop or a nagging bar.
+  try { if (sessionStorage.getItem('pft-reloaded-for') === latestVersion) return; } catch (_) {}
+  if (document.hidden) { reloadForUpdate_(); return; }
   if (document.getElementById('updateBanner')) return;
   const bar = document.createElement('div');
   bar.id = 'updateBanner';
   bar.className = 'update-banner';
   bar.innerHTML = 'A new version of the dashboard is ready. <button id="updateNowBtn" type="button">Reload now</button>';
   document.body.insertBefore(bar, document.body.firstChild);
-  document.getElementById('updateNowBtn').addEventListener('click', function () { location.reload(); });
+  document.getElementById('updateNowBtn').addEventListener('click', reloadForUpdate_);
 }
 
 function startUpdateChecks_() {
