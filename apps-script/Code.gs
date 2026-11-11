@@ -140,7 +140,8 @@ const ACTIONS = {
       .filter(function (r) { return r.email === String(res.emp.email).trim().toLowerCase(); })
       .map(clientLeave_)
       .sort(function (a, b) { return a.date === b.date ? 0 : (a.date < b.date ? 1 : -1); });
-    return { requests: mine.slice(0, 100) };
+    // Only ever THIS caller's own balance: it is looked up by their own name.
+    return { requests: mine.slice(0, 100), balance: readAvailableLeaves_(res.emp.name) };
   },
   // Marks one or several days as Leave / Half Day — `dates` is
   // a comma-separated list of YYYY-MM-DD (an older screen sends a single `date`).
@@ -1128,6 +1129,50 @@ function readLeave_() {
 function clientLeave_(r) {
   return { id: r.id, date: r.date, code: r.code, type: r.type, note: r.note, status: r.status, submittedAt: r.submittedAt };
 }
+// The "Available leaves" block at the top of the Roster tab: team members' names
+// across row 1, each one's remaining paid leaves beneath their name in row 2, and
+// a period label such as "Q4" to the left of the numbers. `top` is those two rows.
+// Returns { available, period } for that one person, or null when they are not
+// listed or their cell is empty / not a number (the screen then shows nothing).
+function availableLeavesFromTop_(top, employeeName) {
+  const names = (top && top[0]) || [], nums = (top && top[1]) || [];
+  const want = String(employeeName || '').trim().toLowerCase();
+  if (!want) return null;
+  let col = -1;
+  for (let c = 0; c < names.length; c++) {
+    if (String(names[c]).trim().toLowerCase() === want) { col = c; break; }
+  }
+  if (col < 0) {
+    // The sheet may head the column with a first name only ("Amar" for "Amar Singh") —
+    // accept that only when exactly one column carries it.
+    const first = want.split(/\s+/)[0];
+    const hits = [];
+    for (let c = 0; c < names.length; c++) if (String(names[c]).trim().toLowerCase() === first) hits.push(c);
+    if (hits.length === 1) col = hits[0];
+  }
+  if (col < 0) return null;
+  const raw = nums[col];
+  if (raw === '' || raw === null || raw === undefined || typeof raw === 'boolean') return null;
+  const n = Number(String(raw).trim());
+  if (!isFinite(n)) return null;
+  let period = '';
+  for (let c = 0; c < col; c++) {
+    const label = String(nums[c] === undefined ? '' : nums[c]).trim();
+    if (/^Q[1-4]$/i.test(label)) period = label.toUpperCase();
+  }
+  return { available: n, period: period };
+}
+
+// Reads only those two rows (cheap) and never throws: the leave screen must
+// still work if the Roster tab cannot be read.
+function readAvailableLeaves_(employeeName) {
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ROSTER);
+    if (!sh || sh.getLastRow() < 2 || sh.getLastColumn() < 1) return null;
+    return availableLeavesFromTop_(sh.getRange(1, 1, 2, sh.getLastColumn()).getValues(), employeeName);
+  } catch (e) { return null; }
+}
+
 // The team lead's view of a request: who asked, and who decided it and when.
 function managerLeave_(r) {
   return { id: r.id, empId: r.empId, name: r.name, date: r.date, code: r.code, type: r.type, note: r.note, status: r.status,

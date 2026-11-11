@@ -51,6 +51,7 @@ let ACTION_IN_FLIGHT = false;
 // The advisor's own leave / half-day requests (third card on the advisor screen).
 let LEAVE = null;
 let LEAVE_ERROR = null;
+let LEAVE_BAL = null; // { available, period } — the person's own paid leaves left, from the Roster tab
 let LEAVE_BUSY = false;
 let LEAVE_MSG = null;
 let LEAVE_DRAFT = { dates: [], type: 'L', note: '' };
@@ -323,7 +324,7 @@ function resetSessionData_() {
   STATE = freshState_(); STATE_LOADED = false; STATE_LOAD_ERROR = null;
   STATE_PENDING_NOTE = null; STATE_RECHECK = null;
   ACTION_IN_FLIGHT = false;
-  LEAVE = null; LEAVE_ERROR = null; LEAVE_BUSY = false; LEAVE_MSG = null; LEAVE_DRAFT = { dates: [], type: 'L', note: '' }; LEAVE_CAL = null;
+  LEAVE = null; LEAVE_BAL = null; LEAVE_ERROR = null; LEAVE_BUSY = false; LEAVE_MSG = null; LEAVE_DRAFT = { dates: [], type: 'L', note: '' }; LEAVE_CAL = null;
   LEAVE_REQS = null; LEAVE_REQS_ERROR = null; LEAVE_REQS_BUSY = false; LEAVE_REQS_MSG = null; LEAVE_REQS_OPEN = {}; leaveReqPollCount = 0;
 }
 
@@ -343,6 +344,7 @@ function hydrateFromCache_() {
   }
   if (!TEAM_ROSTER) TEAM_ROSTER = cacheGet(email, 'roster:' + TEAM_ROSTER_OFFSET);
   if (!IS_MANAGER && !LEAVE) LEAVE = cacheGet(email, 'leave');
+  if (!IS_MANAGER && !LEAVE_BAL) LEAVE_BAL = cacheGet(email, 'leavebal');
 }
 
 // A saved Day End Report is trustworthy to paint if it's today's report saved
@@ -922,10 +924,19 @@ function renderLeaveSelection_() {
   }).join('') + '<button type="button" class="cal-clear" id="leaveClear">Clear all</button></div>';
 }
 
+// "Available Paid Leaves: 1 (Q4)" — the person's own number from the Roster tab; nothing if there isn't one.
+function renderLeaveBalance_() {
+  if (!LEAVE_BAL || typeof LEAVE_BAL.available !== 'number') return '';
+  return '<div class="leave-bal' + (LEAVE_BAL.available <= 0 ? ' leave-bal-zero' : '') + '">' +
+    '<span class="leave-bal-label">Available Paid Leaves' + (LEAVE_BAL.period ? ' <span class="leave-bal-period">' + esc_(LEAVE_BAL.period) + '</span>' : '') + '</span>' +
+    '<span class="leave-bal-n">' + esc_(LEAVE_BAL.available) + '</span></div>';
+}
+
 function renderLeaveCard_() {
   const n = LEAVE_DRAFT.dates.length;
   let html = '<div class="card"><h1>Leave Requests</h1>' +
-    '<div class="sub">Pick one day or several, choose what it is, and submit. Your team lead approves each day.</div>';
+    '<div class="sub">Pick one day or several, choose what it is, and submit. Your team lead approves each day.</div>' +
+    renderLeaveBalance_();
   html += '<div class="leave-layout">' + renderLeaveCalendar_() +
     '<div class="leave-form">' +
       '<label>Type<select id="leaveType">' + LEAVE_TYPES.map(function (t) {
@@ -991,8 +1002,10 @@ function loadLeave_() {
   return api({ action: 'getMyLeave', email: email })
     .then(function (r) {
       LEAVE = sortLeave_(r.requests || []);
+      LEAVE_BAL = r.balance || null;
       LEAVE_ERROR = null;
       cacheSet(email, 'leave', LEAVE);
+      cacheSet(email, 'leavebal', LEAVE_BAL);
       renderMe();
     })
     .catch(function (err) {

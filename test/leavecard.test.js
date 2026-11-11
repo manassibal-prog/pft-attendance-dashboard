@@ -28,7 +28,7 @@ const count = (html, re) => (html.match(re) || []).length;
 function makeEnv(over) {
   const env = { renders: 0, apiCalls: [], pending: [], cacheWrites: [], ids: 0 };
   const sandbox = Object.assign({
-    LEAVE: null, LEAVE_ERROR: null, LEAVE_BUSY: false, LEAVE_MSG: null, LEAVE_DRAFT: { dates: [], type: 'L', note: '' }, LEAVE_CAL: null,
+    LEAVE: null, LEAVE_BAL: null, LEAVE_ERROR: null, LEAVE_BUSY: false, LEAVE_MSG: null, LEAVE_DRAFT: { dates: [], type: 'L', note: '' }, LEAVE_CAL: null,
     CURRENT: { email: 'a@wiom.in' },
     renderMe: function () { env.renders++; },
     newRequestId_: function () { return 'rid-' + (++env.ids); },
